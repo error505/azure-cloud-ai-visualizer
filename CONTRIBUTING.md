@@ -16,7 +16,7 @@ Development workflow
 Local development
 - Frontend (Vite):
   ```powershell
-  cd <repo-root>
+  cd frontend
   pnpm install
   pnpm run dev
   ```

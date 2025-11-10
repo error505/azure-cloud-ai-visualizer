@@ -12,12 +12,10 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "websockets>=12.0",
-    
     # Microsoft Agent Framework
     "azure-ai-agents>=1.0.0b1",
     "agent-framework>=1.0.0b251007",
     "agent-framework-azure-ai>=1.0.0b251007",
-    
     # Azure SDKs
     "azure-identity>=1.15.0",
     "azure-storage-blob>=12.19.0",
@@ -26,23 +24,19 @@ dependencies = [
     "azure-functions-durable>=1.2.9",
     "azure-keyvault-secrets>=4.8.0",
     "azure-search-documents>=11.4.0",
-    
     # OpenAI and AI
     "openai>=1.35.0",
     "azure-ai-inference>=1.0.0b1",
-    
     # Data processing
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "asyncio-mqtt>=0.16.1",
-    
     # Utilities
     "python-multipart>=0.0.6",
     "python-dotenv>=1.0.0",
     "httpx>=0.25.0",
     "aiofiles>=23.2.1",
     "jinja2>=3.1.2",
-    
     # IaC generation
     "PyYAML>=6.0.1",
     "jsonschema>=4.20.0",
