@@ -37,7 +37,7 @@ Prerequisites
 1) Frontend: install and run
 
 ```powershell
-cd <repo-root>
+cd frontend
 # install dependencies (uses pnpm, npm or yarn depending on your setup)
 pnpm install
 pnpm run dev
@@ -68,6 +68,19 @@ uv run uvicorn main:app --reload --port 8000
 ```
 
 4) Open the frontend (Vite dev server) and it should proxy to the backend (see CORS settings in `backend/.env`).
+
+## Using docker to run project locally
+A `docker-compose.yml` file is provided to run both frontend and backend using Docker.
+
+Poulate a `.env` file in the `backend/` directory as described above (with OpenAI fallback or MCP settings).
+
+1) Build and run containers:
+
+```powershell
+docker-compose up --build
+```
+2) Access the frontend at `http://localhost:3000` (or the port specified in the `docker-compose.yml`).
+
 
 ## Configuration
 
