@@ -1,7 +1,7 @@
 """Configuration settings for the Azure Architect Backend."""
 
 from typing import Any, List
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,10 +49,21 @@ class Settings(BaseSettings):
     # Application settings
     ENVIRONMENT: str = Field(default="development", description="Environment name")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
-    CORS_ORIGINS: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000"],
-        description="CORS allowed origins"
+    CORS_ORIGINS: str | List[str] = Field(
+        default="http://localhost:5173,http://localhost:3000",
+        description="CORS allowed origins (comma-separated or JSON array)"
     )
+    
+    @field_validator('CORS_ORIGINS', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> List[str]:
+        """Parse CORS_ORIGINS from comma-separated string or list."""
+        if isinstance(v, str):
+            # Split by comma and strip whitespace
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        elif isinstance(v, list):
+            return v
+        return ["http://localhost:5173", "http://localhost:3000"]
     
     # Chat and WebSocket
     CHAT_MAX_HISTORY: int = Field(default=50, description="Max chat history messages")
