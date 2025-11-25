@@ -12,6 +12,13 @@ import { useIacStore } from '@/store/iacStore';
 import type { BicepResourceSnippet } from '@/store/iacStore';
 import { Textarea } from '../ui/textarea';
 
+interface InspectorPanelProps {
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
+  isChatOpen?: boolean;
+  isIacOpen?: boolean;
+}
+
 // Small helper components for editing tags and endpoints as JSON text
 type SelectedNodeLike = { id: string; data?: Record<string, unknown> };
 const TagsEditor = ({ selectedNode, updateNodeData }: { selectedNode: SelectedNodeLike; updateNodeData: (id: string, patch: Record<string, unknown>) => void }) => {
@@ -136,7 +143,7 @@ const GROUP_BICEP_KEYWORDS: Record<string, string[]> = {
   subscription: ['subscription', 'subscriptions'],
 };
 
-const InspectorPanel = () => {
+const InspectorPanel = ({ isCollapsed = false, onToggleCollapse, isChatOpen = false, isIacOpen = false }: InspectorPanelProps = {}) => {
   const { selectedNode, updateNodeData } = useDiagramStore();
 
   const nodeData = (selectedNode?.data || {}) as any;
@@ -335,20 +342,78 @@ const InspectorPanel = () => {
   const isGroupNode = selectedNode?.type === 'azure.group';
   const groupType = (nodeData.groupType || '') as string;
 
+  // Collapsed state - just show toggle button
+  if (isCollapsed) {
+    // Use fixed positioning when no side panels are open, absolute when they are
+    const hasSidePanels = isChatOpen || isIacOpen;
+    const buttonClassName = hasSidePanels
+      ? "absolute -left-12 top-1/2 -translate-y-1/2 z-50 p-3 rounded-l-lg bg-primary/90 border border-r-0 border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-2xl backdrop-blur-sm text-primary-foreground"
+      : "fixed right-0 top-1/2 -translate-y-1/2 z-50 p-3 rounded-l-lg bg-primary/90 border border-r-0 border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-2xl backdrop-blur-sm text-primary-foreground";
+    
+    return (
+      <aside className="relative h-full w-0 flex-shrink-0 overflow-visible">
+        <button
+          onClick={onToggleCollapse}
+          className={buttonClassName}
+          title="Expand inspector panel"
+          aria-label="Expand inspector panel"
+          style={{ marginRight: 0 }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 18l-6-6 6-6" />
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+      </aside>
+    );
+  }
+
   if (!selectedNode) {
     return (
-      <aside className="glass-panel border-l border-border/50 w-80 p-6 flex flex-col items-center justify-center text-center">
-        <Icon icon="mdi:information-outline" className="text-4xl text-muted-foreground mb-3" />
-        <h3 className="font-semibold text-sm mb-1">No Node Selected</h3>
-        <p className="text-xs text-muted-foreground">
-          Select a node from the canvas to view and edit its properties
-        </p>
+      <aside className="glass-panel border-l border-border/50 w-96 p-6 flex flex-col relative">
+        {/* Collapse button */}
+        {onToggleCollapse && (
+          <button
+            onClick={onToggleCollapse}
+            className="absolute right-2 top-2 p-2 rounded-md bg-background/80 border border-border/50 hover:bg-primary/10 hover:border-primary transition-all"
+            title="Collapse inspector panel"
+            aria-label="Collapse inspector panel"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 18l6-6-6-6" />
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        )}
+        
+        <div className="flex-1 flex flex-col items-center justify-center text-center">
+          <Icon icon="mdi:information-outline" className="text-4xl text-muted-foreground mb-3" />
+          <h3 className="font-semibold text-sm mb-1">No Node Selected</h3>
+          <p className="text-xs text-muted-foreground">
+            Select a node from the canvas to view and edit its properties
+          </p>
+        </div>
       </aside>
     );
   }
 
   return (
-    <aside className="glass-panel border-l border-border/50 w-80 flex flex-col h-full min-h-0">
+    <aside className="glass-panel border-l border-border/50 w-96 flex flex-col h-full min-h-0 relative">
+      {/* Collapse button */}
+      {onToggleCollapse && (
+        <button
+          onClick={onToggleCollapse}
+          className="absolute right-2 top-2 z-20 p-2 rounded-md bg-background/80 border border-border/50 hover:bg-primary/10 hover:border-primary transition-all"
+          title="Collapse inspector panel"
+          aria-label="Collapse inspector panel"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 18l6-6-6-6" />
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
+      )}
+      
       <div className="p-4 border-b border-border/50">
         <h2 className="text-sm font-semibold flex items-center gap-2">
           <Icon icon="mdi:tune" className="text-primary" />

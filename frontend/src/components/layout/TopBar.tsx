@@ -190,7 +190,7 @@ const TopBar = ({
             <span className="hidden md:inline">Sign in</span>
           </Button>
         ) : (
-          <Badge variant="secondary" className="bg-white/10 text-white/70">
+          <Badge variant="secondary" className="bg-muted text-muted-foreground border border-border">
             Supabase disabled
           </Badge>
         )}

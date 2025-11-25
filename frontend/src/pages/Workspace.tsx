@@ -8,6 +8,7 @@ import JobsDrawer from '@/components/layout/JobsDrawer';
 import ChatPanel from '@/components/layout/ChatPanel';
 import AssetManager from '@/components/layout/AssetManager';
 import IaCVisualization from '@/components/layout/IaCVisualization';
+import { ResizableDivider } from '@/components/ui/resizable-divider';
 import { useDiagramStore } from '@/store/diagramStore';
 import { generateIac, createDeployment } from '@/lib/api';
 import DeployModal from '@/components/layout/DeployModal';
@@ -47,6 +48,9 @@ const Workspace = () => {
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | undefined>(routeProjectId);
   const [projectTitle, setProjectTitle] = useState<string | undefined>(undefined);
+  const [footerHeight, setFooterHeight] = useState<number>(192); // Default: 192px (h-48)
+  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState<boolean>(false);
+  const [isServicePaletteCollapsed, setIsServicePaletteCollapsed] = useState<boolean>(false);
 
   const { client: supabaseClient, supabaseAvailable } = useSupabase();
   const { nodes, edges, clearDiagram, replaceDiagram, loadDiagram } = useDiagramStore();
@@ -593,10 +597,20 @@ const Workspace = () => {
         onRename={handleRename}
         onDelete={handleDelete}
       />
-      <div className="flex-1 flex overflow-hidden">
-        <ServicePalette />
+      <div className="flex-1 flex overflow-hidden" style={{ minHeight: 0 }}>
+        <ServicePalette 
+          isCollapsed={isServicePaletteCollapsed}
+          onToggleCollapse={() => setIsServicePaletteCollapsed(!isServicePaletteCollapsed)}
+          isChatOpen={isChatOpen}
+          isIacOpen={isIacOpen}
+        />
         <DiagramCanvas />
-        <InspectorPanel />
+        <InspectorPanel 
+          isCollapsed={isInspectorCollapsed}
+          onToggleCollapse={() => setIsInspectorCollapsed(!isInspectorCollapsed)}
+          isChatOpen={isChatOpen}
+          isIacOpen={isIacOpen}
+        />
         <IaCVisualization
           isOpen={isIacOpen}
           onToggle={handleIacToggle}
@@ -628,7 +642,16 @@ const Workspace = () => {
           onIacGenerated={persistIacArtifacts}
         />
       </div>
+      <ResizableDivider 
+        onResize={setFooterHeight}
+        onMinimize={() => setFooterHeight(48)}
+        onMaximize={() => setFooterHeight(400)}
+        minHeight={48}
+        maxHeight={600}
+        defaultHeight={192}
+      />
       <JobsDrawer
+        height={footerHeight}
         files={generatedFiles}
         onDownload={(file) => {
           const blob = new Blob([file.content], { type: 'text/plain' });

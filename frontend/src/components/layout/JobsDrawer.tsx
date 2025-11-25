@@ -22,9 +22,10 @@ interface JobsDrawerProps {
   files?: IaCFileBrief[];
   onDownload?: (file: IaCFileBrief) => void;
   onDeploy?: (file: IaCFileBrief) => void;
+  height?: number;
 }
 
-const JobsDrawer = ({ files = [], onDownload, onDeploy }: JobsDrawerProps) => {
+const JobsDrawer = ({ files = [], onDownload, onDeploy, height = 192 }: JobsDrawerProps) => {
   const [selectedFileId, setSelectedFileId] = useState<string | null>(files.length ? files[0].id : null);
   const nodes = useDiagramStore((state) => state.nodes);
   const edges = useDiagramStore((state) => state.edges);
@@ -98,7 +99,11 @@ const JobsDrawer = ({ files = [], onDownload, onDeploy }: JobsDrawerProps) => {
   );
 
   return (
-    <div className="glass-panel border-t border-border/50 h-48">
+    <div 
+      className="glass-panel border-t border-border/50" 
+      style={{ height: `${height}px` }}
+      data-resizable-footer
+    >
       <Tabs defaultValue="summary" className="h-full flex flex-col">
         <TabsList className="mx-4 mt-3 grid w-auto grid-cols-4">
           <TabsTrigger value="summary" className="gap-2">

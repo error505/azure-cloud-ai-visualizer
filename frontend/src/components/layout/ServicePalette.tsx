@@ -3,6 +3,13 @@ import { Icon } from '@iconify/react';
 import { azureServices, serviceCategories } from '@/data/azureServices';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+
+interface ServicePaletteProps {
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
+  isChatOpen?: boolean;
+  isIacOpen?: boolean;
+}
 import {
   Accordion,
   AccordionItem,
@@ -17,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-const ServicePalette = () => {
+const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = false, isIacOpen = false }: ServicePaletteProps = {}) => {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const groupTemplates = [
@@ -99,8 +106,46 @@ const ServicePalette = () => {
     event.dataTransfer.effectAllowed = 'move';
   };
 
+  // Collapsed state - just show toggle button
+  if (isCollapsed) {
+    // Use fixed positioning when no side panels are open, absolute when they are
+    const hasSidePanels = isChatOpen || isIacOpen;
+    const buttonClassName = hasSidePanels
+      ? "absolute -right-12 top-1/2 -translate-y-1/2 z-50 p-3 rounded-r-lg bg-primary/90 border border-l-0 border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-2xl backdrop-blur-sm text-primary-foreground"
+      : "fixed left-0 top-1/2 -translate-y-1/2 z-50 p-3 rounded-r-lg bg-primary/90 border border-l-0 border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-2xl backdrop-blur-sm text-primary-foreground";
+    
+    return (
+      <aside className="relative h-full w-0 flex-shrink-0 overflow-visible">
+        <button
+          onClick={onToggleCollapse}
+          className={buttonClassName}
+          title="Expand service palette"
+          aria-label="Expand service palette"
+          style={{ marginLeft: 0 }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 18l6-6-6-6" />
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
+      </aside>
+    );
+  }
+
   return (
-    <aside className="glass-panel border-r border-border/50 w-64 flex flex-col min-h-0">
+    <aside className="glass-panel border-r border-border/50 w-64 flex flex-col min-h-0 relative">
+      {onToggleCollapse && (
+        <button
+          onClick={onToggleCollapse}
+          className="absolute -right-3 top-1/2 -translate-y-1/2 z-50 p-2 rounded-full bg-primary/90 border border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-lg backdrop-blur-sm text-primary-foreground"
+          title="Collapse service palette"
+          aria-label="Collapse service palette"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+      )}
       <div className="p-4 border-b border-border/50">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           <Icon icon="mdi:view-grid-plus" className="text-primary" />
