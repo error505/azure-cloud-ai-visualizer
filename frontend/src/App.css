@@ -27,6 +27,16 @@
   }
 }
 
+@keyframes dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.animate-dash {
+  animation: dash 1s linear infinite;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   a:nth-of-type(2) .logo {
     animation: logo-spin infinite 20s linear;
@@ -40,3 +50,19 @@
 .read-the-docs {
   color: #888;
 }
+
+/* React Flow edge selection improvements */
+.react-flow__edge-path {
+  cursor: pointer;
+  transition: stroke-width 0.2s ease;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.6));
+}
+
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 3px !important;
+}
+

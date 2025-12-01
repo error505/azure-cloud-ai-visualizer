@@ -5,6 +5,7 @@ interface DiagramState {
   nodes: RFNode[];
   edges: Edge[];
   selectedNode: RFNode | null;
+  editingEdgeId: string | null;
   onNodesChange: (changes: NodeChange<RFNode>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -17,12 +18,14 @@ interface DiagramState {
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void;
   removeEdge: (edgeId: string) => void;
   updateEdgeLabel: (edgeId: string, label?: string, data?: Record<string, unknown>) => void;
+  setEditingEdgeId: (edgeId: string | null) => void;
 }
 
 export const useDiagramStore = create<DiagramState>((set, get) => ({
   nodes: [],
   edges: [],
   selectedNode: null,
+  editingEdgeId: null,
 
   onNodesChange: (changes) => {
     set({
@@ -259,5 +262,10 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       edge.id === edgeId ? { ...edge, label: label ?? edge.label, data: { ...(edge.data || {}), ...(data || {}) } } : edge
     );
     set({ edges: newEdges });
+  },
+
+  // Set which edge is being edited (for modal)
+  setEditingEdgeId: (edgeId: string | null) => {
+    set({ editingEdgeId: edgeId });
   },
 }));
