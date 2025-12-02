@@ -46,6 +46,10 @@ const DiagramCanvas = () => {
   } = useDiagramStore();
   const removeEdge = useDiagramStore((s) => s.removeEdge);
   const updateEdgeLabel = useDiagramStore((s) => s.updateEdgeLabel);
+  const bringNodeToFront = useDiagramStore((s) => s.bringNodeToFront);
+  const sendNodeToBack = useDiagramStore((s) => s.sendNodeToBack);
+  const bringNodeForward = useDiagramStore((s) => s.bringNodeForward);
+  const sendNodeBackward = useDiagramStore((s) => s.sendNodeBackward);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -130,6 +134,34 @@ const DiagramCanvas = () => {
       
       if (selectedNodes.length > 0 || selectedEdges.length > 0) {
         toast.info(`Deleted ${selectedNodes.length} node(s) and ${selectedEdges.length} edge(s)`);
+      }
+    },
+    onBringToFront: () => {
+      const selectedNodes = nodes.filter((n) => n.selected);
+      if (selectedNodes.length === 1) {
+        bringNodeToFront(selectedNodes[0].id);
+        toast.success('Brought to front');
+      }
+    },
+    onSendToBack: () => {
+      const selectedNodes = nodes.filter((n) => n.selected);
+      if (selectedNodes.length === 1) {
+        sendNodeToBack(selectedNodes[0].id);
+        toast.success('Sent to back');
+      }
+    },
+    onBringForward: () => {
+      const selectedNodes = nodes.filter((n) => n.selected);
+      if (selectedNodes.length === 1) {
+        bringNodeForward(selectedNodes[0].id);
+        toast.success('Brought forward');
+      }
+    },
+    onSendBackward: () => {
+      const selectedNodes = nodes.filter((n) => n.selected);
+      if (selectedNodes.length === 1) {
+        sendNodeBackward(selectedNodes[0].id);
+        toast.success('Sent backward');
       }
     },
   });

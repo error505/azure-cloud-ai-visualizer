@@ -19,6 +19,10 @@ interface DiagramState {
   removeEdge: (edgeId: string) => void;
   updateEdgeLabel: (edgeId: string, label?: string, data?: Record<string, unknown>) => void;
   setEditingEdgeId: (edgeId: string | null) => void;
+  bringNodeToFront: (nodeId: string) => void;
+  sendNodeToBack: (nodeId: string) => void;
+  bringNodeForward: (nodeId: string) => void;
+  sendNodeBackward: (nodeId: string) => void;
 }
 
 export const useDiagramStore = create<DiagramState>((set, get) => ({
@@ -267,5 +271,56 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   // Set which edge is being edited (for modal)
   setEditingEdgeId: (edgeId: string | null) => {
     set({ editingEdgeId: edgeId });
+  },
+
+  // Z-index management functions
+  bringNodeToFront: (nodeId: string) => {
+    const nodes = get().nodes;
+    const maxZIndex = Math.max(...nodes.map(n => (n.style?.zIndex as number) || 0), 0);
+    const newNodes = nodes.map(node =>
+      node.id === nodeId
+        ? { ...node, style: { ...node.style, zIndex: maxZIndex + 1 } }
+        : node
+    );
+    set({ nodes: newNodes });
+  },
+
+  sendNodeToBack: (nodeId: string) => {
+    const nodes = get().nodes;
+    const minZIndex = Math.min(...nodes.map(n => (n.style?.zIndex as number) || 0), 0);
+    const newNodes = nodes.map(node =>
+      node.id === nodeId
+        ? { ...node, style: { ...node.style, zIndex: minZIndex - 1 } }
+        : node
+    );
+    set({ nodes: newNodes });
+  },
+
+  bringNodeForward: (nodeId: string) => {
+    const nodes = get().nodes;
+    const targetNode = nodes.find(n => n.id === nodeId);
+    if (!targetNode) return;
+
+    const currentZIndex = (targetNode.style?.zIndex as number) || 0;
+    const newNodes = nodes.map(node =>
+      node.id === nodeId
+        ? { ...node, style: { ...node.style, zIndex: currentZIndex + 1 } }
+        : node
+    );
+    set({ nodes: newNodes });
+  },
+
+  sendNodeBackward: (nodeId: string) => {
+    const nodes = get().nodes;
+    const targetNode = nodes.find(n => n.id === nodeId);
+    if (!targetNode) return;
+
+    const currentZIndex = (targetNode.style?.zIndex as number) || 0;
+    const newNodes = nodes.map(node =>
+      node.id === nodeId
+        ? { ...node, style: { ...node.style, zIndex: currentZIndex - 1 } }
+        : node
+    );
+    set({ nodes: newNodes });
   },
 }));

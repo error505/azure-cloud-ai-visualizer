@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
 import { Icon } from '@iconify/react';
+import NodeLayerToolbar from '@/components/layout/NodeLayerToolbar';
 
 interface AzureServiceData {
   title: string;
@@ -23,7 +24,7 @@ interface AzureServiceData {
   resourceType?: string;
 }
 
-const AzureServiceNode = ({ data, selected }: NodeProps) => {
+const AzureServiceNode = ({ data, selected, id }: NodeProps) => {
   const nodeData = data as unknown as AzureServiceData;
   
   const statusColors = {
@@ -37,18 +38,20 @@ const AzureServiceNode = ({ data, selected }: NodeProps) => {
   const isAnimated = nodeData.animationProfile?.effect !== 'none';
 
   return (
-    <div 
-      className={`
-        glass-panel rounded-2xl p-4 min-w-[140px] max-w-[180px]
-        transition-all duration-300
-        ${selected ? 'ring-2 ring-primary glow-primary scale-105' : ''}
-        ${statusColor}
-        hover:shadow-xl hover:scale-102 hover:border-primary/40
-        ${isAnimated && nodeData.animationProfile?.effect === 'pulse' ? 'animate-pulse' : ''}
-        ${isAnimated && nodeData.animationProfile?.effect === 'glow' ? 'glow-accent' : ''}
-      `}
-      data-node-id={nodeData.title}
-    >
+    <>
+      <NodeLayerToolbar nodeId={id} isVisible={selected} />
+      <div 
+        className={`
+          glass-panel rounded-2xl p-4 min-w-[140px] max-w-[180px]
+          transition-all duration-300
+          ${selected ? 'ring-2 ring-primary glow-primary scale-105' : ''}
+          ${statusColor}
+          hover:shadow-xl hover:scale-102 hover:border-primary/40
+          ${isAnimated && nodeData.animationProfile?.effect === 'pulse' ? 'animate-pulse' : ''}
+          ${isAnimated && nodeData.animationProfile?.effect === 'glow' ? 'glow-accent' : ''}
+        `}
+        data-node-id={nodeData.title}
+      >
       {/* Top handles */}
       <Handle
         type="target"
@@ -192,7 +195,8 @@ const AzureServiceNode = ({ data, selected }: NodeProps) => {
         id="right-source"
         className="!bg-primary/80 !w-3 !h-3 !border-2 !border-background transition-all hover:!w-4 hover:!h-4"
       />
-    </div>
+      </div>
+    </>
   );
 };
 
