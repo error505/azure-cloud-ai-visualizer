@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import { Icon } from '@iconify/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,6 +21,43 @@ interface IaCFile {
   warnings?: string[];
 }
 
+interface AwsMigrationPriceRow {
+  node_id?: string;
+  aws_service?: string;
+  azure_service?: string;
+  currency?: string;
+  aws_monthly?: number;
+  azure_monthly?: number;
+  delta?: number;
+  assumptions?: string;
+  savings_percent?: number | null;
+}
+
+interface AwsMigrationCostSummary {
+  currency?: string;
+  aws_monthly_total?: number;
+  azure_monthly_total?: number;
+  delta?: number;
+  savings?: number;
+  savings_percent?: number | null;
+  verdict?: string;
+  summary_markdown?: string;
+  per_service?: AwsMigrationPriceRow[];
+}
+
+interface AwsMigrationSnippet {
+  aws_service?: string;
+  azure_service?: string;
+  snippet?: string;
+}
+
+interface AwsMigrationPayload {
+  price_summary?: AwsMigrationPriceRow[];
+  cost_summary?: AwsMigrationCostSummary;
+  bicep_snippets?: AwsMigrationSnippet[];
+  unmapped_services?: { node_id?: string; aws_service?: string; reason?: string }[];
+}
+
 interface IaCVisualizationProps {
   isOpen: boolean;
   onToggle: () => void;
@@ -29,6 +66,21 @@ interface IaCVisualizationProps {
   onDownload?: (file: IaCFile) => void;
   onDeploy?: (file: IaCFile) => void;
 }
+
+const formatCurrencyValue = (value?: number, currency = 'USD'): string => {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+  return `${currency} ${value.toFixed(2)}`;
+};
+
+const formatDelta = (value?: number, currency = 'USD'): string => {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+  const formatted = `${currency} ${Math.abs(value).toFixed(2)}`;
+  return value === 0 ? 'Even' : value < 0 ? `-${formatted}` : `+${formatted}`;
+};
 
 const IaCVisualization: React.FC<IaCVisualizationProps> = ({
   isOpen,
@@ -126,6 +178,24 @@ const IaCVisualization: React.FC<IaCVisualizationProps> = ({
       initial={settings}
     />
   );
+
+  const migrationInsights = useMemo(() => {
+    if (!selectedFile?.parameters || typeof selectedFile.parameters !== 'object') {
+      return null;
+    }
+    const migrationRaw = (selectedFile.parameters as Record<string, unknown>).aws_migration;
+    if (!migrationRaw || typeof migrationRaw !== 'object') {
+      return null;
+    }
+    const payload = migrationRaw as AwsMigrationPayload;
+    const priceSummary = Array.isArray(payload.price_summary) ? payload.price_summary : [];
+    const snippets = Array.isArray(payload.bicep_snippets) ? payload.bicep_snippets : [];
+    const unmappedServices = Array.isArray(payload.unmapped_services) ? payload.unmapped_services : [];
+    if (priceSummary.length === 0 && snippets.length === 0 && unmappedServices.length === 0) {
+      return null;
+    }
+    return { priceSummary, snippets, unmappedServices };
+  }, [selectedFile]);
 
   if (!isOpen) return null;
 
@@ -289,6 +359,107 @@ const IaCVisualization: React.FC<IaCVisualizationProps> = ({
                         </code>
                       </pre>
                     </ScrollArea>
+                    {migrationInsights && (
+                      <div className="border-t border-border/50 p-4 space-y-4 bg-muted/20">
+                        <div className="space-y-4">
+                          {migrationInsights.unmappedServices.length > 0 && (
+                            <div>
+                              <h5 className="text-xs font-semibold text-yellow-600 uppercase tracking-wide mb-2">
+                                Unmapped AWS services
+                              </h5>
+                              <div className="space-y-1">
+                                {migrationInsights.unmappedServices.map((item, index) => (
+                                  <div
+                                    key={`${item.node_id ?? item.aws_service ?? index}`}
+                                    className="text-xs text-muted-foreground rounded border border-dashed border-yellow-500/40 px-3 py-2 bg-yellow-500/5"
+                                  >
+                                    <span className="font-medium text-foreground">
+                                      {item.aws_service ?? 'AWS service'}
+                                    </span>
+                                    {item.reason ? (
+                                      <span className="ml-2 text-[11px] text-muted-foreground">{item.reason}</span>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div>
+                            <h4 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                              AWS Migration Insights
+                            </h4>
+                            {migrationInsights.priceSummary.length > 0 && (
+                              <div className="space-y-2">
+                                {migrationInsights.priceSummary.map((row, index) => (
+                                  <div
+                                    key={`${row.node_id ?? row.aws_service ?? index}`}
+                                    className="rounded-lg border border-border/40 p-3 bg-background/80 space-y-1"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium">
+                                      <span>
+                                        {row.aws_service ?? 'AWS service'} → {row.azure_service ?? 'Azure service'}
+                                      </span>
+                                      <span
+                                        className={
+                                          typeof row.delta === 'number'
+                                            ? row.delta < 0
+                                              ? 'text-emerald-600'
+                                              : row.delta > 0
+                                              ? 'text-orange-600'
+                                              : 'text-muted-foreground'
+                                            : 'text-muted-foreground'
+                                        }
+                                      >
+                                        {formatDelta(row.delta, row.currency)}
+                                      </span>
+                                    </div>
+                                    <div className="flex flex-wrap gap-4 text-[11px] text-muted-foreground">
+                                      <span>AWS: {formatCurrencyValue(row.aws_monthly, row.currency)}</span>
+                                      <span>Azure: {formatCurrencyValue(row.azure_monthly, row.currency)}</span>
+                                    </div>
+                                    {row.assumptions && (
+                                      <p className="text-[11px] text-muted-foreground">
+                                        Assumes {row.assumptions}
+                                      </p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {migrationInsights.snippets.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                              Bicep Scaffolding
+                            </div>
+                            {migrationInsights.snippets.map((snippet, index) => (
+                              <div key={`${snippet.aws_service ?? 'snippet'}-${index}`} className="rounded-lg border border-border/40 overflow-hidden">
+                                <div className="flex items-center justify-between px-3 py-2 bg-muted/50">
+                                  <span className="text-xs font-medium">
+                                    {snippet.aws_service ?? 'AWS'} → {snippet.azure_service ?? 'Azure'}
+                                  </span>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 text-[11px] gap-1"
+                                    onClick={() => snippet.snippet && copyToClipboard(snippet.snippet)}
+                                  >
+                                    <Icon icon="mdi:content-copy" className="text-[10px]" />
+                                    Copy
+                                  </Button>
+                                </div>
+                                <ScrollArea className="max-h-48">
+                                  <pre className="p-3 text-[11px] whitespace-pre-wrap bg-background/90">
+                                    {snippet.snippet}
+                                  </pre>
+                                </ScrollArea>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

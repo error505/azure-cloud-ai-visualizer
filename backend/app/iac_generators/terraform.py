@@ -1,8 +1,20 @@
 import json
 import logging
+import asyncio
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _cancelled_response(provider: str, stage: str) -> Dict[str, Any]:
+    logger.warning('Terraform generation cancelled during %s stage', stage)
+    return {
+        'terraform_code': '',
+        'parameters': {
+            'error': f'Terraform generation cancelled during {stage}',
+            'provider': provider,
+        },
+    }
 
 
 async def generate_terraform_code(agent_client: Any, diagram: Dict[str, Any], options: Dict[str, Any] | None = None, use_model: bool = False) -> Dict[str, Any]:
@@ -24,6 +36,8 @@ async def generate_terraform_code(agent_client: Any, diagram: Dict[str, Any], op
                 # Add MCP enhancement flag
                 raw.setdefault('parameters', {})['mcp_enhanced'] = True
                 return raw
+    except asyncio.CancelledError:
+        return _cancelled_response(provider, 'MCP (terraform)')
     except Exception:
         logger.exception('MCP-enhanced terraform generation failed, falling back to standard')
 
@@ -44,6 +58,8 @@ async def generate_terraform_code(agent_client: Any, diagram: Dict[str, Any], op
                     return json.loads(raw)
                 except Exception:
                     return {'terraform_code': raw, 'parameters': {'provider': provider}}
+    except asyncio.CancelledError:
+        return _cancelled_response(provider, 'standard')
     except Exception:
         logger.exception('Agent terraform generation failed')
 

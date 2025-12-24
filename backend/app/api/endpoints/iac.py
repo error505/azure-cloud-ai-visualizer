@@ -19,6 +19,8 @@ from app.core.azure_client import AzureClientManager
 from app.iac_generators import generate_bicep_code, generate_terraform_code
 from app.iac_generators.validation import validate_iac_with_cli
 from app.iac_generators.enrichment import enrich_diagram_with_governance
+from app.iac_generators.aws_migration import migrate_aws_diagram
+from app.iac_generators.gcp_migration import migrate_gcp_diagram
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,9 +75,30 @@ async def generate_iac(
     validation when `init_and_validate` is True.
     """
     try:
-        agent = azure_clients.get_azure_architect_agent()
+        try:
+            agent = azure_clients.get_azure_architect_agent()
+        except RuntimeError as re:
+            # Provide a clearer HTTP error when the backend agent isn't initialized.
+            logger.error('Azure Architect Agent unavailable: %s', re)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    'AI agent not initialized. Ensure the backend was started with either Azure credentials '
+                    'or OpenAI fallback enabled (set USE_OPENAI_FALLBACK=true and provide OPENAI_API_KEY). '
+                    'See backend/README.md for OpenAI fallback instructions.'
+                ),
+            )
         diagram = request_data.diagram_data if isinstance(request_data.diagram_data, dict) else {}
         diagram, preflight = enrich_diagram_with_governance(diagram)
+        
+        # Try both AWS and GCP migrations
+        aws_migration = migrate_aws_diagram(diagram)
+        gcp_migration = migrate_gcp_diagram(diagram)
+        
+        # Use whichever migration was applied (AWS takes precedence if both detected)
+        migration = aws_migration if aws_migration.applied else gcp_migration
+        diagram = migration.diagram
+        
         target = (request_data.target_format or 'bicep').lower()
 
         if target == 'bicep':
@@ -101,6 +124,19 @@ async def generate_iac(
             parameters = result.get('parameters', {}) or {}
         else:
             content = str(result)
+            parameters = {}
+
+        if migration.applied or migration.unmapped_services:
+            migration_key = 'aws_migration' if aws_migration.applied else 'gcp_migration'
+            migration_payload = {
+                'converted_nodes': migration.converted_nodes,
+                'price_summary': migration.price_summary,
+                'cost_summary': migration.cost_summary,
+                'bicep_snippets': migration.bicep_snippets,
+                'unmapped_services': migration.unmapped_services,
+                'azure_diagram': migration.diagram,
+            }
+            parameters.setdefault(migration_key, {}).update(migration_payload)
 
         if preflight:
             parameters.setdefault('preflight', {})

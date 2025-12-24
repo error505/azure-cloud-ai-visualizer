@@ -1,15 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { azureServices, serviceCategories } from '@/data/azureServices';
+import { awsServices, awsServiceCategories } from '@/data/awsServices';
+import gcpServicesDefault, { gcpServiceCategories } from '@/data/gcpServices';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-
-interface ServicePaletteProps {
-  isCollapsed?: boolean;
-  onToggleCollapse?: () => void;
-  isChatOpen?: boolean;
-  isIacOpen?: boolean;
-}
 import {
   Accordion,
   AccordionItem,
@@ -24,9 +19,19 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = false, isIacOpen = false }: ServicePaletteProps = {}) => {
+type AzurePaletteService = (typeof azureServices)[number];
+type AwsPaletteService = (typeof awsServices)[number];
+type ProviderFilter = 'all' | 'azure' | 'aws' | 'gcp';
+
+const ServicePalette = () => {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>('azure');
+
+  useEffect(() => {
+    setSelectedCategory(null);
+  }, [providerFilter]);
+
   const groupTemplates = [
     {
       id: 'management-group',
@@ -59,15 +64,47 @@ const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = fa
     },
   ];
 
-    const filteredServices = azureServices.filter((service) => {
-    const title = (service.title || '').toLowerCase();
-    const desc = (service.description || '').toLowerCase();
-    const matchesSearch = title.includes(search.toLowerCase()) || desc.includes(search.toLowerCase());
-    const matchesCategory = !selectedCategory || service.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  const categoryOptions = useMemo(() => {
+    if (providerFilter === 'azure') return serviceCategories;
+    if (providerFilter === 'aws') return awsServiceCategories;
+    if (providerFilter === 'gcp') return gcpServiceCategories;
+    return [];
+  }, [providerFilter]);
 
-  const onDragStart = (event: React.DragEvent, service: typeof azureServices[0]) => {
+  const matchesSearch = (title: string, description: string) => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
+    return title.toLowerCase().includes(needle) || description.toLowerCase().includes(needle);
+  };
+
+  const matchesCategoryFilter = (category: string, serviceProvider: ProviderFilter) => {
+    if (!selectedCategory || providerFilter === 'all') {
+      return true;
+    }
+    return providerFilter === serviceProvider && category === selectedCategory;
+  };
+
+  const shouldShowAzure = providerFilter === 'all' || providerFilter === 'azure';
+  const shouldShowAws = providerFilter === 'all' || providerFilter === 'aws';
+  const shouldShowGcp = providerFilter === 'all' || providerFilter === 'gcp';
+
+  const filteredAzureServices = shouldShowAzure
+    ? azureServices.filter((service) => matchesSearch(service.title, service.description) && matchesCategoryFilter(service.category, 'azure'))
+    : [];
+
+  const filteredAwsServices = shouldShowAws
+    ? awsServices.filter((service) => matchesSearch(service.title, service.description) && matchesCategoryFilter(service.category, 'aws'))
+    : [];
+
+  const filteredGcpServices = shouldShowGcp
+    ? gcpServicesDefault.filter((service) => matchesSearch(service.title, service.description) && matchesCategoryFilter(service.category, 'gcp'))
+    : [];
+
+  const onDragStart = (
+    event: React.DragEvent,
+    service: AzurePaletteService | AwsPaletteService,
+    provider: 'azure' | 'aws',
+  ) => {
     event.dataTransfer.setData(
       'application/reactflow',
       JSON.stringify({
@@ -77,6 +114,30 @@ const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = fa
           iconPath: service.iconPath,
           status: 'inactive',
           category: service.category,
+          provider,
+          ...(provider === 'aws'
+            ? { awsServiceId: (service as AwsPaletteService).sourceIconId, awsTitle: service.title }
+            : {}),
+        },
+      }),
+    );
+    event.dataTransfer.effectAllowed = 'move';
+  };
+
+  // GCP drag helper
+  const onDragStartGcp = (event: React.DragEvent, service: (typeof gcpServices)[number]) => {
+    event.dataTransfer.setData(
+      'application/reactflow',
+      JSON.stringify({
+        type: 'azure.service',
+        data: {
+          title: service.title,
+          iconPath: service.iconPath,
+          status: 'inactive',
+          category: service.category,
+          provider: 'gcp',
+          gcpServiceId: service.id,
+          gcpTitle: service.title,
         },
       }),
     );
@@ -106,46 +167,8 @@ const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = fa
     event.dataTransfer.effectAllowed = 'move';
   };
 
-  // Collapsed state - just show toggle button
-  if (isCollapsed) {
-    // Use fixed positioning when no side panels are open, absolute when they are
-    const hasSidePanels = isChatOpen || isIacOpen;
-    const buttonClassName = hasSidePanels
-      ? "absolute -right-12 top-1/2 -translate-y-1/2 z-50 p-3 rounded-r-lg bg-primary/90 border border-l-0 border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-2xl backdrop-blur-sm text-primary-foreground"
-      : "fixed left-0 top-1/2 -translate-y-1/2 z-50 p-3 rounded-r-lg bg-primary/90 border border-l-0 border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-2xl backdrop-blur-sm text-primary-foreground";
-    
-    return (
-      <aside className="relative h-full w-0 flex-shrink-0 overflow-visible">
-        <button
-          onClick={onToggleCollapse}
-          className={buttonClassName}
-          title="Expand service palette"
-          aria-label="Expand service palette"
-          style={{ marginLeft: 0 }}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 18l6-6-6-6" />
-            <path d="M9 18l6-6-6-6" />
-          </svg>
-        </button>
-      </aside>
-    );
-  }
-
   return (
-    <aside className="glass-panel border-r border-border/50 w-64 flex flex-col min-h-0 relative">
-      {onToggleCollapse && (
-        <button
-          onClick={onToggleCollapse}
-          className="absolute -right-3 top-1/2 -translate-y-1/2 z-50 p-2 rounded-full bg-primary/90 border border-primary/50 hover:bg-primary hover:border-primary transition-all shadow-lg backdrop-blur-sm text-primary-foreground"
-          title="Collapse service palette"
-          aria-label="Collapse service palette"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </button>
-      )}
+    <aside className="glass-panel border-r border-border/50 w-64 flex flex-col min-h-0">
       <div className="p-4 border-b border-border/50">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           <Icon icon="mdi:view-grid-plus" className="text-primary" />
@@ -160,11 +183,24 @@ const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = fa
         />
       </div>
 
-  <div className="p-2 border-b border-border/50">
+      <div className="p-2 border-b border-border/50 space-y-2">
+        <Select value={providerFilter} onValueChange={(value) => setProviderFilter(value as ProviderFilter)}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="Provider" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="azure">Azure</SelectItem>
+            <SelectItem value="gcp">GCP</SelectItem>
+            <SelectItem value="aws">AWS</SelectItem>
+            <SelectItem value="all">All providers</SelectItem>
+          </SelectContent>
+        </Select>
+
         {/* Use a non-empty sentinel value for the "All" option because Radix Select
             does not allow an Item with an empty string value. We map the sentinel
             to null in state so filtering behavior remains the same. */}
         <Select
+          disabled={providerFilter === 'all'}
           value={selectedCategory ?? '__all__'}
           onValueChange={(v) => setSelectedCategory(v === '__all__' ? null : v)}
         >
@@ -173,7 +209,7 @@ const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = fa
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__all__">All</SelectItem>
-            {serviceCategories.map((category) => (
+            {categoryOptions.map((category) => (
               <SelectItem key={category} value={category}>
                 {category}
               </SelectItem>
@@ -238,29 +274,105 @@ const ServicePalette = ({ isCollapsed = false, onToggleCollapse, isChatOpen = fa
           </Accordion>
   </div>
 
-  <div className="space-y-1">
-          {filteredServices.map((service) => (
-            <div
-              key={service.id}
-              draggable
-              onDragStart={(e) => onDragStart(e, service)}
-              className="glass-hover p-3 rounded-lg cursor-move flex items-center gap-3 group"
-            >
-              <div className="p-2 rounded bg-primary/10 group-hover:bg-primary/20 transition-colors">
-                <img
-                  src={service.iconPath}
-                  alt={service.title}
-                  className="h-6 w-6 object-contain"
-                  draggable={false}
-                />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-medium truncate">{service.title}</h3>
-                <p className="text-xs text-muted-foreground truncate">{service.description}</p>
-              </div>
+        <Accordion type="multiple" className="space-y-2" defaultValue={['azure-services']}>
+          {shouldShowAzure && (
+            <AccordionItem value="azure-services">
+              <AccordionTrigger className="w-full text-sm font-semibold uppercase tracking-wide text-muted-foreground text-left">
+                Azure Services ({filteredAzureServices.length})
+              </AccordionTrigger>
+              <AccordionContent>
+                <div className="space-y-1">
+                  {filteredAzureServices.length === 0 && (
+                    <div className="text-xs text-muted-foreground px-2 py-3">
+                      No Azure services match your filters.
+                    </div>
+                  )}
+                  {filteredAzureServices.map((service) => (
+                    <div
+                      key={service.id}
+                      draggable
+                      onDragStart={(e) => onDragStart(e, service, 'azure')}
+                      className="glass-hover p-3 rounded-lg cursor-move flex items-center gap-3 group"
+                    >
+                      <div className="p-2 rounded bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                        <img src={service.iconPath} alt={service.title} className="h-6 w-6 object-contain" draggable={false} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-sm font-medium truncate">{service.title}</h3>
+                        <p className="text-xs text-muted-foreground truncate">{service.description}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+
+          {shouldShowAws && (
+            <AccordionItem value="aws-services">
+              <AccordionTrigger className="w-full text-sm font-semibold uppercase tracking-wide text-muted-foreground text-left">
+                AWS Services ({filteredAwsServices.length})
+              </AccordionTrigger>
+              <AccordionContent>
+                <div className="space-y-1">
+                  {filteredAwsServices.length === 0 && (
+                    <div className="text-xs text-muted-foreground px-2 py-3">
+                      No AWS services match your filters.
+                    </div>
+                  )}
+                  {filteredAwsServices.map((service) => (
+                    <div
+                      key={service.id}
+                      draggable
+                      onDragStart={(e) => onDragStart(e, service, 'aws')}
+                      className="glass-hover p-3 rounded-lg cursor-move flex items-center gap-3 group"
+                    >
+                      <div className="p-2 rounded bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                        <img src={service.iconPath} alt={service.title} className="h-6 w-6 object-contain" draggable={false} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-sm font-medium truncate">{service.title}</h3>
+                        <p className="text-xs text-muted-foreground truncate">{service.description}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+      {shouldShowGcp && (
+        <AccordionItem value="gcp-services">
+          <AccordionTrigger className="w-full text-sm font-semibold uppercase tracking-wide text-muted-foreground text-left">
+            GCP Services ({filteredGcpServices.length})
+          </AccordionTrigger>
+          <AccordionContent>
+            <div className="space-y-1">
+              {filteredGcpServices.length === 0 && (
+                <div className="text-xs text-muted-foreground px-2 py-3">
+                  No GCP services match your filters.
+                </div>
+              )}
+              {filteredGcpServices.map((service) => (
+                <div
+                  key={service.id}
+                  draggable
+                  onDragStart={(e) => onDragStartGcp(e, service)}
+                  className="glass-hover p-3 rounded-lg cursor-move flex items-center gap-3 group"
+                >
+                  <div className="p-2 rounded bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                    <img src={service.iconPath} alt={service.title} className="h-6 w-6 object-contain" draggable={false} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-medium truncate">{service.title}</h3>
+                    <p className="text-xs text-muted-foreground truncate">{service.description}</p>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </AccordionContent>
+        </AccordionItem>
+      )}
+        </Accordion>
       </ScrollArea>
     </aside>
   );

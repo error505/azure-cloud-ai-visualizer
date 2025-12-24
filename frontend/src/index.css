@@ -107,6 +107,56 @@ html.white-blue {
     @apply bg-background text-foreground antialiased;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
+
+  /* Ensure proper text wrapping in chat messages */
+  .prose {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    max-width: 100%;
+  }
+
+  .prose p, .prose div, .prose span {
+    max-width: 100%;
+    white-space: pre-wrap;
+  }
+
+  .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
+    word-break: break-word;
+  }
+
+  /* Handle code blocks in chat */
+  .prose pre {
+    overflow-x: auto;
+    max-width: 100%;
+    white-space: pre;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(147,197,253,0.5) transparent;
+  }
+
+  .prose pre::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .prose pre::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .prose pre::-webkit-scrollbar-thumb {
+    background-color: rgba(147,197,253,0.4);
+    border-radius: 3px;
+  }
+
+  .prose pre::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(147,197,253,0.6);
+  }
+
+  .prose code {
+    word-break: break-word;
+  }
+
+  .prose pre code {
+    white-space: pre;
+  }
 }
 
 @layer utilities {
@@ -183,5 +233,115 @@ html.white-blue {
     to {
       transform: rotate(360deg);
     }
+  }
+
+  /* Modern minimal custom scrollbar for inputs and scrollable areas */
+  .custom-scroll {
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: rgba(147,197,253,0.6) transparent;
+  }
+
+  .custom-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .custom-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(147,197,253,0.48); /* subtle blue */
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  .custom-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(147,197,253,0.7);
+  }
+
+  /* Slightly darker variant for very dark backgrounds */
+  .custom-scroll.dark-thumb::-webkit-scrollbar-thumb {
+    background-color: rgba(99,102,241,0.36);
+  }
+
+  /* Force all ReactMarkdown prose elements to respect container width */
+  .prose * {
+    max-width: 100% !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-all !important;
+  }
+
+  /* Prevent child elements from forcing the chat container to expand horizontally */
+  .space-y-4, .space-y-4 > * {
+    min-width: 0 !important;
+  }
+
+  /* Limit width for assistant messages specifically and force word breaking when needed */
+  .chat-assistant {
+    /* inline-size maps to width for horizontal writing modes; min(85%, 720px) ensures it never exceeds the chat panel */
+    max-inline-size: min(85%, 720px);
+    inline-size: min(85%, 720px);
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+    width: min(85%, 720px);
+    display: block;
+    align-self: flex-start;
+  }
+
+  .chat-assistant .prose {
+    max-inline-size: 100% !important;
+    inline-size: 100% !important;
+  }
+
+  /* Ensure text wraps inside chat messages and only pre/code will allow internal scrolling */
+  .chat-assistant .prose {
+    white-space: normal !important; /* allow lines to wrap */
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+
+  .chat-assistant .prose pre,
+  .chat-assistant .prose code {
+    max-inline-size: 100% !important;
+    overflow-x: auto !important;
+    white-space: pre !important; /* preserve formatting for codeblocks */
+  }
+
+  /* Prevent syntax-highlighted code blocks (e.g. `language-json`) from expanding the chat
+     Force internal horizontal scrolling and ensure long tokens wrap or break where possible */
+  pre[class*="language-"], code[class*="language-"] {
+    max-inline-size: 100% !important;
+    inline-size: 100% !important;
+    overflow-x: auto !important;
+    white-space: pre !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+    display: block !important;
+  }
+
+  /* Target common prism-style wrappers (pre > code with language- classes) */
+  pre > code[class*="language-"] {
+    display: block !important;
+    max-inline-size: 100% !important;
+    overflow-x: auto !important;
+    white-space: pre !important;
+  }
+  
+  .prose pre {
+    overflow-x: auto !important;
+    max-width: 100% !important;
+  }
+  
+  .prose code {
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
+  }
+  
+  .prose table {
+    display: block !important;
+    overflow-x: auto !important;
+    max-width: 100% !important;
   }
 }

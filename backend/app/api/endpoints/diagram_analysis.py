@@ -18,6 +18,8 @@ except Exception:
     AsyncOpenAI = None
 import openai
 
+from app.agents.diagram_guide_prompts import STRUCTURED_DIAGRAM_GUIDANCE
+
 # Load environment variables
 load_dotenv()
 
@@ -469,28 +471,52 @@ async def analyze_diagram(request: ImageAnalysisRequest, force_model: bool = Fal
         image_data = f"data:{request.format};base64,{request.image}"
 
         # Create the system prompt for diagram analysis
-        system_prompt = """You are an expert Azure cloud architect analyzing architecture diagrams.
+        # Use string concatenation to avoid f-string issues with curly braces in STRUCTURED_DIAGRAM_GUIDANCE
+        system_prompt = """You are an expert cloud architect analyzing architecture diagrams from multiple cloud providers.
 
         Your task is to:
-        1. Identify every individual Azure service or feature icon visible in the diagram — even if multiple appear inside one box (for example: Text Analytics, Translator, and Vision should each be listed separately, not grouped under 'Cognitive Services').
-        2. Detect and describe all logical connections or data flows between services.
-        3. Provide a concise summary of the architecture’s purpose and flow.
-        4. Suggest additional Azure services that would strengthen or secure the architecture.
+        1. Identify every individual cloud service or feature icon visible in the diagram from Azure, AWS, or GCP — even if multiple appear inside one box (for example: Text Analytics, Translator, and Vision should each be listed separately, not grouped under 'Cognitive Services').
+        2. Detect the cloud provider for each service (Azure, AWS, or GCP) based on visual branding and service names.
+        3. Detect and describe all logical connections or data flows between services.
+        4. Provide a concise summary of the architecture's purpose and flow.
+        5. For non-Azure diagrams, suggest Azure services that could replace the detected services.
+        6. **CRITICAL**: Analyze the spatial layout of services in the diagram and organize them into logical tiers (entry, app, messaging, compute, data).
+        7. **GENERATE DIAGRAM JSON**: Create a complete ReactFlow Diagram JSON following the schema and positioning rules below.
 
-            Return your analysis strictly in this JSON format:
-            {
-                "services": ["Service Name 1", "Service Name 2", ...],
-                "connections": [{"from_service": "Service A", "to_service": "Service B", "label": "connection type"}],
-                "description": "Brief description of the architecture",
-                "suggested_services": ["Suggested Service 1", "Suggested Service 2", ...]
+        """ + STRUCTURED_DIAGRAM_GUIDANCE + """
+
+        Return your analysis in this JSON format:
+        {
+            "services": [
+                {
+                    "name": "Service Name",
+                    "provider": "azure|aws|gcp",
+                    "tier": "entry|app|messaging|compute|data",
+                    "position_hint": "left|center|right"
+                }
+            ],
+            "connections": [{"from_service": "Service A", "to_service": "Service B", "label": "connection type"}],
+            "description": "Brief description of the architecture",
+            "suggested_services": ["Suggested Service 1", "Suggested Service 2", ...],
+            "diagram_json": {
+                "services": [...],
+                "groups": [...],
+                "connections": [...],
+                "layout": "vertical|horizontal|grid"
             }
+        }
 
-            Guidelines:
-            - List every distinct Azure icon or capability you see (e.g., Azure Cognitive Services - Text Analytics, Translator, Vision, Azure Functions, AI Document Intelligence, Azure Machine Learning, Azure Cognitive Search, Blob Storage, Table Storage, Web Application, etc.).
-            - Do **not** merge icons or label groups.
-            - Be specific with complete Azure service names (e.g., 'Azure Cognitive Services - Text Analytics' instead of 'Cognitive Services').
-            - Use precise connection labels (Ingestion, Enrichment, Projection, Query, Indexing, etc.).
-            """
+        Guidelines:
+        - **Multi-cloud detection**: Recognize services from Azure (blue branding), AWS (orange branding), and GCP (multi-color branding).
+        - **Azure services**: Use full names (e.g., Azure Cognitive Services - Text Analytics, Azure Functions, Azure Storage, etc.).
+        - **AWS services**: Use official names (e.g., AWS Lambda, Amazon S3, Amazon EC2, Amazon RDS, AWS API Gateway, etc.).
+        - **GCP services**: Use official names (e.g., Google Compute Engine, Cloud Functions, Cloud Storage, Cloud SQL, BigQuery, etc.).
+        - List every distinct icon or capability you see — do **not** merge icons or label groups.
+        - Be specific with complete service names including provider prefix when ambiguous.
+        - Use precise connection labels (Ingestion, Enrichment, Projection, Query, Indexing, Data Flow, API Call, etc.).
+        - For AWS/GCP diagrams, suggest Azure equivalents in the suggested_services field.
+        - **MANDATORY**: Follow all positioning rules from STRUCTURED_DIAGRAM_GUIDANCE above.
+        """
 
 
         # Call OpenAI Vision API using the async client if available. We send the
@@ -511,13 +537,13 @@ async def analyze_diagram(request: ImageAnalysisRequest, force_model: bool = Fal
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": "Please analyze this Azure architecture diagram and identify all services and their connections."
+                                    "text": "Please analyze this cloud architecture diagram and:\n1. Identify all services and their connections\n2. Detect cloud provider (Azure/AWS/GCP) based on icons and branding\n3. Classify services into tiers based on their vertical position\n4. Generate a complete Diagram JSON with proper positioning following the STRUCTURED_DIAGRAM_GUIDANCE rules\n\nIMPORTANT: Ensure services in the same tier are spaced 450px apart horizontally (x-axis) and different tiers are 250px apart vertically (y-axis)."
                                 },
                                 {
                                     "type": "image_url",
                                     "image_url": {
                                         "url": image_data,
-                                        "detail": "low"  # Use "low" to reduce token usage
+                                        "detail": "high"  # Use "high" for better service recognition
                                     }
                                 }
                             ]
@@ -527,7 +553,7 @@ async def analyze_diagram(request: ImageAnalysisRequest, force_model: bool = Fal
                     from typing import Any
                     messages_any: Any = messages
                     response = await async_client.chat.completions.create(
-                        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+                        model=os.getenv("OPENAI_MODEL", "gpt-5-nano-2025-08-07"),
                         messages=messages_any,
                         max_tokens=1500,
                         temperature=0.1
@@ -575,7 +601,7 @@ async def analyze_diagram(request: ImageAnalysisRequest, force_model: bool = Fal
                         from typing import Any
                         messages_any: Any = messages
                         response = client.chat.completions.create(
-                            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+                            model=os.getenv("OPENAI_MODEL", "gpt-5-nano-2025-08-07"),
                             messages=messages_any,
                             max_tokens=1500,
                             temperature=0.1
@@ -592,13 +618,16 @@ async def analyze_diagram(request: ImageAnalysisRequest, force_model: bool = Fal
         # frontend still receives a structured result instead of a 500.
         raw_content = None
         if response is None:
-            logger.warning("No OpenAI response received — using deterministic image analyzer fallback")
-            try:
-                from app.agents.azure_architect_agent import analyze_image_for_architecture as deterministic_image_analyze
-                raw_content = deterministic_image_analyze(image_data)
-            except Exception as e:
-                logger.error("Deterministic image analyzer failed: %s", e)
-                raw_content = "{\"services\": [], \"connections\": [], \"description\": \"No analysis available\", \"suggested_services\": []}"
+            logger.warning("No OpenAI response received — using safe deterministic fallback (no agents)")
+            # Do NOT call into the agent/team code here. Return a minimal safe analysis
+            # so that the frontend receives a structured payload without triggering
+            # the Architect/FinalEditor agent pipelines.
+            raw_content = json.dumps({
+                "services": [],
+                "connections": [],
+                "description": "No analysis available (vision model did not return a valid response)",
+                "suggested_services": [],
+            })
         else:
             try:
                 # Support both async/sync client shapes. Prefer structured access
@@ -657,32 +686,24 @@ async def analyze_diagram(request: ImageAnalysisRequest, force_model: bool = Fal
         # Parse the JSON response robustly (strip Markdown/code fences, extract JSON block)
         analysis_json = extract_json_from_text(analysis_text)
         if analysis_json is None:
-            # If JSON parsing fails, extract information manually
-            logger.warning("Failed to parse JSON response, using fallback parsing")
-            # Try the deterministic analyzer from azure_architect_agent as a
-            # final fallback. This will at least return structured symbols.
+            # If JSON parsing fails, avoid invoking agent/team fallbacks.
+            # Produce a conservative structured response derived from the raw
+            # analysis_text so the frontend can still show something useful
+            # without triggering additional agent workflows.
+            logger.warning("Failed to parse JSON response; returning safe structured fallback")
+            # Try to heuristically extract service names if present in text
             try:
-                from app.agents.azure_architect_agent import analyze_diagram as deterministic_analyze
-                det = deterministic_analyze(analysis_text)
-                # deterministic_analyze returns a JSON string of resource symbols
-                try:
-                    det_json = json.loads(det)
-                    services = [v.get("title") for k, v in det_json.items() if isinstance(v, dict)]
-                except Exception:
-                    services = []
-                analysis_json = {
-                    "services": services,
-                    "connections": [],
-                    "description": (analysis_text or "").strip()[:200] + "...",
-                    "suggested_services": []
-                }
+                # Find quoted fragments that look like service names
+                possible = re.findall(r"\b([A-Z][A-Za-z0-9 \-\+&]+Service[s]?|AWS [A-Za-z0-9]+|Amazon [A-Za-z0-9]+|Google [A-Za-z0-9]+)\b", analysis_text or "")
+                services = list(dict.fromkeys([s.strip() for s in possible if s and len(s) > 2]))
             except Exception:
-                analysis_json = {
-                    "services": [],
-                    "connections": [],
-                    "description": (analysis_text or "").strip()[:200] + "...",
-                    "suggested_services": []
-                }
+                services = []
+            analysis_json = {
+                "services": services,
+                "connections": [],
+                "description": (analysis_text or "").strip()[:200] + "...",
+                "suggested_services": []
+            }
         # --- Expand grouped or generic service names into detailed sub-services ---
         EXPANSION_MAP = {
             "Azure Cognitive Services": [
@@ -702,8 +723,18 @@ async def analyze_diagram(request: ImageAnalysisRequest, force_model: bool = Fal
         }
 
         expanded_services = []
-        for s in analysis_json.get("services", []):
-            expanded_services.extend(EXPANSION_MAP.get(s, [s]))
+        services_list = analysis_json.get("services", [])
+        
+        # Handle both old format (list of strings) and new format (list of dicts)
+        for s in services_list:
+            # Extract service name whether it's a string or dict
+            if isinstance(s, dict):
+                service_name = s.get("name", "")
+            else:
+                service_name = str(s) if s else ""
+            
+            if service_name:
+                expanded_services.extend(EXPANSION_MAP.get(service_name, [service_name]))
 
         # Deduplicate while preserving order
         analysis_json["services"] = list(dict.fromkeys(expanded_services))

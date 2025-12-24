@@ -8,6 +8,11 @@ export interface AzureService {
   title: string;
   iconPath: string;
   description: string;
+  provider?: 'azure' | 'aws' | 'gcp' | string;
+  badges?: string[];
+  placeholder?: boolean;
+  placeholderReason?: string;
+  notes?: string;
   // Additional Azure/Bicep-like metadata (all optional)
   resourceType?: string; // e.g. Microsoft.Storage/storageAccounts
   resourceGroup?: string;
@@ -145,6 +150,8 @@ export const azureServices: AzureService[] = normalizedCategories
         title: icon.title,
         iconPath: encodedPath,
         description: `${category.name} service`,
+        provider: 'azure',
+        badges: ['Azure'],
         // leave Azure metadata empty by default; parsers or analyzers may fill these
         resourceType: undefined,
         resourceGroup: undefined,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '@iconify/react';
 import ParticleBackground from '@/components/ParticleBackground';
@@ -9,7 +9,15 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSupabase } from '@/context/SupabaseContext';
 import { supabaseClient } from '@/lib/supabaseClient';
-import { createProjectWithPrompt, listRecentProjects, ProjectRecord } from '@/services/projectService';
+import {
+  createProjectWithPrompt,
+  listRecentProjects,
+  ProjectRecord,
+  DEFAULT_INTEGRATION_SETTINGS,
+  type IntegrationSettings,
+} from '@/services/projectService';
+import { DiagramImagePayload } from '@/types/diagramUpload';
+import IntegrationMarketplace from '@/components/layout/IntegrationMarketplace';
 
 const gradientBackground =
   'bg-[radial-gradient(circle_at_20%_-10%,rgba(76,106,255,0.45),transparent_55%),radial-gradient(circle_at_80%_0,rgba(236,72,153,0.35),transparent_60%),radial-gradient(circle_at_50%_80%,rgba(14,165,233,0.35),transparent_70%)]';
@@ -20,6 +28,8 @@ const featurePrompts = [
   'Create a real-time analytics pipeline using Synapse and Stream Analytics',
 ];
 
+type McpKey = 'bicep' | 'terraform' | 'docs';
+
 const Index = () => {
   const navigate = useNavigate();
   const { user, signInWithProvider, signOut, isReady, supabaseAvailable } = useSupabase();
@@ -27,6 +37,7 @@ const Index = () => {
   const [prompt, setPrompt] = useState('');
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState<string | null>(null);
+  const [diagramImagePayload, setDiagramImagePayload] = useState<DiagramImagePayload | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
@@ -34,6 +45,44 @@ const Index = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [displayPlaceholder, setDisplayPlaceholder] = useState("");
   const placeholderText = "Ask the agent to design your Azure architecture...";
+  const [integrationSettings, setIntegrationSettings] = useState<IntegrationSettings>(DEFAULT_INTEGRATION_SETTINGS);
+  const [isIntegrationModalOpen, setIsIntegrationModalOpen] = useState(false);
+
+  const integrationSnapshot = useMemo<IntegrationSettings>(() => ({
+    mcp: {
+      bicep: Boolean(integrationSettings.mcp?.bicep),
+      terraform: Boolean(integrationSettings.mcp?.terraform),
+      docs: Boolean(integrationSettings.mcp?.docs),
+    },
+    agents: {
+      architect: Boolean(integrationSettings.agents?.architect ?? true),
+      security: Boolean(integrationSettings.agents?.security),
+      reliability: Boolean(integrationSettings.agents?.reliability),
+      cost: Boolean(integrationSettings.agents?.cost),
+      networking: Boolean(integrationSettings.agents?.networking),
+      observability: Boolean(integrationSettings.agents?.observability),
+      dataStorage: Boolean(integrationSettings.agents?.dataStorage),
+      compliance: Boolean(integrationSettings.agents?.compliance),
+      identity: Boolean(integrationSettings.agents?.identity),
+      naming: Boolean(integrationSettings.agents?.naming),
+    },
+  }), [integrationSettings]);
+
+  const enabledMcpCount = useMemo(
+    () => Object.values(integrationSnapshot.mcp ?? {}).filter(Boolean).length,
+    [integrationSnapshot]
+  );
+
+  const enabledAgentsCount = useMemo(
+    () => {
+      const agents = integrationSnapshot.agents ?? {};
+      // Don't count architect since it's always enabled
+      return Object.entries(agents).filter(([key, value]) => key !== 'architect' && value).length;
+    },
+    [integrationSnapshot]
+  );
+
+  const totalIntegrations = enabledMcpCount + enabledAgentsCount;
 
 
   useEffect(() => {
@@ -73,6 +122,16 @@ const Index = () => {
     }
     setCoverFile(file);
     setCoverPreview(URL.createObjectURL(file));
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      setDiagramImagePayload({
+        name: file.name,
+        type: file.type,
+        dataUrl: result,
+      });
+    };
+    reader.readAsDataURL(file);
   };
 
   const handlePromptSelect = (value: string) => {
@@ -81,9 +140,15 @@ const Index = () => {
 
   const startWorkspace = async () => {
     const trimmedPrompt = prompt.trim();
-    if (!trimmedPrompt) {
+    const hasPrompt = trimmedPrompt.length > 0;
+    const hasDiagram = Boolean(diagramImagePayload);
+    if (!hasPrompt && !hasDiagram) {
+      setErrorMessage('Please provide a prompt or attach a diagram image to analyze.');
       return;
     }
+    const shouldDefaultPrompt = hasPrompt;
+    // When only an image is provided, avoid auto-sending a prompt that triggers agents; let vision handle it.
+    const effectivePrompt = shouldDefaultPrompt ? trimmedPrompt : '';
     setIsSubmitting(true);
     setErrorMessage(null);
 
@@ -92,19 +157,33 @@ const Index = () => {
 
       if (supabaseClient && isReady && supabaseAvailable) {
         const record = await createProjectWithPrompt(supabaseClient, {
-          prompt: trimmedPrompt,
+          prompt: effectivePrompt,
           userId: user?.id ?? null,
-          title: trimmedPrompt.slice(0, 80),
+          title: effectivePrompt.slice(0, 80),
           coverFile,
+          integrationSettings: integrationSnapshot,
         });
         createdProjectId = record.id;
       }
 
+      let diagramImageKey: string | undefined;
+      if (diagramImagePayload) {
+        const key = `diagram-upload:${crypto.randomUUID()}`;
+        try {
+          sessionStorage.setItem(key, JSON.stringify(diagramImagePayload));
+          diagramImageKey = key;
+        } catch (err) {
+          console.warn('[Index] Failed to buffer diagram image payload', err);
+        }
+      }
+
       navigate(createdProjectId ? `/app/${createdProjectId}` : '/app', {
         state: {
-          initialPrompt: trimmedPrompt,
+          initialPrompt: effectivePrompt,
           projectId: createdProjectId,
-          openChat: true,
+          openChat: hasPrompt || hasDiagram,
+          diagramImageKey,
+          integrationSettings: integrationSnapshot,
         },
       });
     } catch (err: unknown) {
@@ -122,9 +201,39 @@ const Index = () => {
         initialPrompt: '',
         projectId: undefined,
         openChat: false,
+        integrationSettings: integrationSnapshot,
       },
     });
   };
+
+  const handleIntegrationToggle = useCallback((key: string, value: boolean, type?: 'mcp' | 'agent') => {
+    setIntegrationSettings((prev) => {
+      if (type === 'agent') {
+        const nextAgents = {
+          architect: prev.agents?.architect ?? DEFAULT_INTEGRATION_SETTINGS.agents?.architect ?? true,
+          security: prev.agents?.security ?? DEFAULT_INTEGRATION_SETTINGS.agents?.security ?? false,
+          reliability: prev.agents?.reliability ?? DEFAULT_INTEGRATION_SETTINGS.agents?.reliability ?? false,
+          cost: prev.agents?.cost ?? DEFAULT_INTEGRATION_SETTINGS.agents?.cost ?? false,
+          networking: prev.agents?.networking ?? DEFAULT_INTEGRATION_SETTINGS.agents?.networking ?? false,
+          observability: prev.agents?.observability ?? DEFAULT_INTEGRATION_SETTINGS.agents?.observability ?? false,
+          dataStorage: prev.agents?.dataStorage ?? DEFAULT_INTEGRATION_SETTINGS.agents?.dataStorage ?? false,
+          compliance: prev.agents?.compliance ?? DEFAULT_INTEGRATION_SETTINGS.agents?.compliance ?? false,
+          identity: prev.agents?.identity ?? DEFAULT_INTEGRATION_SETTINGS.agents?.identity ?? false,
+          naming: prev.agents?.naming ?? DEFAULT_INTEGRATION_SETTINGS.agents?.naming ?? false,
+        };
+        (nextAgents as Record<string, boolean>)[key] = value;
+        return { ...prev, agents: nextAgents };
+      } else {
+        const nextMcp = {
+          bicep: prev.mcp?.bicep ?? DEFAULT_INTEGRATION_SETTINGS.mcp?.bicep ?? false,
+          terraform: prev.mcp?.terraform ?? DEFAULT_INTEGRATION_SETTINGS.mcp?.terraform ?? false,
+          docs: prev.mcp?.docs ?? DEFAULT_INTEGRATION_SETTINGS.mcp?.docs ?? false,
+        };
+        (nextMcp as Record<string, boolean>)[key] = value;
+        return { ...prev, mcp: nextMcp };
+      }
+    });
+  }, []);
   useEffect(() => {
     const text = placeholderText;
     let active = true;
@@ -383,6 +492,20 @@ const Index = () => {
                   >
                     Start blank canvas
                   </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="flex items-center gap-2 text-white/70 hover:text-white"
+                    onClick={() => setIsIntegrationModalOpen(true)}
+                  >
+                    <Icon icon="mdi:puzzle" className="text-lg" />
+                    Agents & Tools
+                    {totalIntegrations > 0 ? (
+                      <Badge variant="secondary" className="bg-primary/20 text-primary">
+                        {totalIntegrations}
+                      </Badge>
+                    ) : null}
+                  </Button>
                 </div>
                 <div className="flex items-center gap-3">
                   <Button
@@ -404,6 +527,16 @@ const Index = () => {
                   )}
                 </Button>
               </div>
+
+              <IntegrationMarketplace
+                open={isIntegrationModalOpen}
+                onOpenChange={setIsIntegrationModalOpen}
+                settings={integrationSnapshot}
+                onToggle={(key, value, type) => handleIntegrationToggle(key, value, type)}
+                isSaving={false}
+                disabled={false}
+                projectId={undefined}
+              />
             </div>
           </div>
           </section>

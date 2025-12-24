@@ -7,6 +7,46 @@ export interface ProjectDiagramState {
   saved_at: string;
 }
 
+export interface IntegrationSettings {
+  mcp?: {
+    bicep?: boolean;
+    terraform?: boolean;
+    docs?: boolean;
+  };
+  agents?: {
+    architect?: boolean;
+    security?: boolean;
+    reliability?: boolean;
+    cost?: boolean;
+    networking?: boolean;
+    observability?: boolean;
+    dataStorage?: boolean;
+    compliance?: boolean;
+    identity?: boolean;
+    naming?: boolean;
+  };
+}
+
+export const DEFAULT_INTEGRATION_SETTINGS: IntegrationSettings = {
+  mcp: {
+    bicep: false,
+    terraform: false,
+    docs: false,
+  },
+  agents: {
+    architect: true,  // Always enabled by default
+    security: false,
+    reliability: false,
+    cost: false,
+    networking: false,
+    observability: false,
+    dataStorage: false,
+    compliance: false,
+    identity: false,
+    naming: false,
+  },
+};
+
 export interface ProjectRecord {
   id: string;
   title: string;
@@ -20,6 +60,7 @@ export interface ProjectRecord {
   bicep_parameters: Record<string, unknown> | null;
   terraform_template: string | null;
   terraform_parameters: Record<string, unknown> | null;
+  integration_settings?: IntegrationSettings | null;
   created_at: string;
   updated_at: string;
 }
@@ -41,23 +82,32 @@ export const createProjectWithPrompt = async (
     title?: string;
     coverFile?: File | null;
     diagramState?: ProjectDiagramState | null;
+    integrationSettings?: IntegrationSettings | null;
   }
 ) => {
   const title = options.title?.trim() || options.prompt.slice(0, 60);
+  const integrationSettings = options.integrationSettings ?? DEFAULT_INTEGRATION_SETTINGS;
 
   let coverUrl: string | null = null;
   if (options.coverFile) {
-    const fileExt = options.coverFile.name.split('.').pop() || 'png';
-    const filePath = `project-covers/${crypto.randomUUID()}.${fileExt}`;
-    const { error: uploadError } = await supabase.storage.from('project-assets').upload(filePath, options.coverFile, {
-      cacheControl: '3600',
-      upsert: true,
-    });
-    if (uploadError) {
-      throw uploadError;
+    try {
+      const fileExt = options.coverFile.name.split('.').pop() || 'png';
+      const filePath = `project-covers/${crypto.randomUUID()}.${fileExt}`;
+      const uploadResult = await supabase.storage
+        .from('project-assets')
+        .upload(filePath, options.coverFile, {
+          cacheControl: '3600',
+          upsert: true,
+        });
+      if (uploadResult.error) {
+        throw uploadResult.error;
+      }
+      const { data: publicUrl } = supabase.storage.from('project-assets').getPublicUrl(filePath);
+      coverUrl = publicUrl.publicUrl;
+    } catch (storageError) {
+      console.warn('[projectService] Failed to upload cover image, continuing without cover_url', storageError);
+      coverUrl = null;
     }
-    const { data: publicUrl } = supabase.storage.from('project-assets').getPublicUrl(filePath);
-    coverUrl = publicUrl.publicUrl;
   }
 
   const { data, error } = await supabase
@@ -74,6 +124,7 @@ export const createProjectWithPrompt = async (
       bicep_parameters: null,
       terraform_template: null,
       terraform_parameters: null,
+      integration_settings: integrationSettings,
     })
     .select()
     .single<ProjectRecord>();
@@ -157,6 +208,9 @@ export const upsertConversationMessage = async (
     role: 'user' | 'assistant' | 'system';
     content: string;
     azureConversationId?: string | null;
+    runId?: string | null;
+    traceEvents?: Record<string, unknown>[] | null;
+    agentName?: string | null;
   }
 ) => {
   const { error } = await supabase.from('conversations').insert({
@@ -164,10 +218,38 @@ export const upsertConversationMessage = async (
     role: options.role,
     content: options.content,
     azure_conversation_id: options.azureConversationId ?? null,
+    run_id: options.runId ?? null,
+    trace_events: options.traceEvents ?? null,
+    agent_name: options.agentName ?? null,
   });
   if (error) {
     throw error;
   }
+};
+
+export const getConversationHistory = async (
+  supabase: SupabaseClient,
+  projectId: string
+): Promise<Array<{
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  created_at: string;
+  run_id: string | null;
+  trace_events: Record<string, unknown>[] | null;
+  agent_name: string | null;
+}>> => {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('id, role, content, created_at, run_id, trace_events, agent_name')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: true });
+  
+  if (error) {
+    throw error;
+  }
+  
+  return data || [];
 };
 
 export const saveProjectDiagramState = async (
@@ -244,4 +326,28 @@ export const updateProjectIacTemplates = async (
   if (error) {
     throw error;
   }
+};
+
+export const updateProjectIntegrationSettings = async (
+  supabase: SupabaseClient,
+  projectId: string,
+  settings: IntegrationSettings
+) => {
+  const payload = {
+    integration_settings: settings,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from('projects')
+    .update(payload)
+    .eq('id', projectId)
+    .select()
+    .single<ProjectRecord>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
 };

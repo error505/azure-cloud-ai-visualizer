@@ -113,7 +113,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, client_id: str):
                     
                     # Call OpenAI API
                     openai_response = openai_client.chat.completions.create(
-                        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                        model=os.getenv("OPENAI_MODEL", "gpt-5-nano-2025-08-07"),
                         messages=messages,
                         max_tokens=1000,
                         temperature=0.7

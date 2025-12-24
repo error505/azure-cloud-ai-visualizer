@@ -1,11 +1,21 @@
 import { create } from 'zustand';
 import { Node as RFNode, Edge, Connection, addEdge, applyNodeChanges, applyEdgeChanges, NodeChange, EdgeChange } from '@xyflow/react';
+import { chooseHandle } from '@/lib/handleChooser';
+
+type DiagramView = 'source' | 'azure';
+
+interface DiagramSnapshot {
+  nodes: RFNode[];
+  edges: Edge[];
+}
 
 interface DiagramState {
   nodes: RFNode[];
   edges: Edge[];
   selectedNode: RFNode | null;
-  editingEdgeId: string | null;
+  currentView: DiagramView;
+  views: Record<string, DiagramSnapshot>;
+  isGenerating: boolean;
   onNodesChange: (changes: NodeChange<RFNode>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -18,47 +28,68 @@ interface DiagramState {
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void;
   removeEdge: (edgeId: string) => void;
   updateEdgeLabel: (edgeId: string, label?: string, data?: Record<string, unknown>) => void;
-  setEditingEdgeId: (edgeId: string | null) => void;
-  bringNodeToFront: (nodeId: string) => void;
-  sendNodeToBack: (nodeId: string) => void;
-  bringNodeForward: (nodeId: string) => void;
-  sendNodeBackward: (nodeId: string) => void;
+  updateEdgeConnection: (edgeId: string, connection: { source?: string; target?: string; sourceHandle?: string; targetHandle?: string }) => void;
+  setViewSnapshot: (view: DiagramView, nodes: RFNode[], edges: Edge[]) => void;
+  switchView: (view: DiagramView) => void;
+  setIsGenerating: (isGenerating: boolean) => void;
 }
+const withUpdatedView = (viewKey: DiagramView, snapshot: DiagramSnapshot, views: Record<string, DiagramSnapshot>) => ({
+  ...views,
+  [viewKey]: snapshot,
+});
 
 export const useDiagramStore = create<DiagramState>((set, get) => ({
   nodes: [],
   edges: [],
   selectedNode: null,
-  editingEdgeId: null,
+  currentView: 'source',
+  views: { source: { nodes: [], edges: [] } },
+  isGenerating: false,
 
   onNodesChange: (changes) => {
-    set({
-      nodes: applyNodeChanges(changes, get().nodes),
+    set((state) => {
+      const nodes = applyNodeChanges(changes, state.nodes);
+      return {
+        nodes,
+        views: withUpdatedView(state.currentView, { nodes, edges: state.edges }, state.views),
+      };
     });
   },
 
   onEdgesChange: (changes) => {
-    set({
-      edges: applyEdgeChanges(changes, get().edges),
+    set((state) => {
+      const edges = applyEdgeChanges(changes, state.edges);
+      return {
+        edges,
+        views: withUpdatedView(state.currentView, { nodes: state.nodes, edges }, state.views),
+      };
     });
   },
 
   onConnect: (connection) => {
-    set({
-      edges: addEdge(
+    set((state) => {
+      const edges = addEdge(
         {
           ...connection,
           type: 'animated',
           data: { animated: true },
         },
-        get().edges
-      ),
+        state.edges
+      );
+      return {
+        edges,
+        views: withUpdatedView(state.currentView, { nodes: state.nodes, edges }, state.views),
+      };
     });
   },
 
   addNode: (node) => {
-    set({
-      nodes: [...get().nodes, node],
+    set((state) => {
+      const nodes = [...state.nodes, node];
+      return {
+        nodes,
+        views: withUpdatedView(state.currentView, { nodes, edges: state.edges }, state.views),
+      };
     });
   },
 
@@ -113,16 +144,24 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       return abs;
     };
 
-    // Choose a handle name based on the relative direction between two points
+    // Choose a handle name based on the relative direction between two points using angle bins
     const chooseHandle = (fromPos: { x: number; y: number }, toPos: { x: number; y: number }, role: 'source' | 'target') => {
       const dx = toPos.x - fromPos.x;
       const dy = toPos.y - fromPos.y;
-      // Prefer horizontal if horizontal distance is larger, otherwise vertical
-      const horizontal = Math.abs(dx) > Math.abs(dy);
-      if (horizontal) {
-        return dx > 0 ? `right-${role}` : `left-${role}`;
+      // Angle in radians (browser coordinates: y increases downward)
+      const angle = Math.atan2(dy, dx);
+      const PI = Math.PI;
+      // Angle bins: right (-PI/4 .. PI/4), bottom (PI/4 .. 3PI/4), left (3PI/4 .. PI or -PI .. -3PI/4), top (-3PI/4 .. -PI/4)
+      if (angle > -PI / 4 && angle <= PI / 4) {
+        return `right-${role}`;
       }
-      return dy > 0 ? `bottom-${role}` : `top-${role}`;
+      if (angle > PI / 4 && angle <= (3 * PI) / 4) {
+        return `bottom-${role}`;
+      }
+      if (angle > (3 * PI) / 4 || angle <= -((3 * PI) / 4)) {
+        return `left-${role}`;
+      }
+      return `top-${role}`;
     };
 
     const newEdges = filteredConnections
@@ -182,24 +221,89 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       appliedEdges: newEdges.length,
     });
 
-    set({
+    const mergedEdges = [...existingEdges, ...newEdges];
+
+    set((state) => ({
       nodes: newNodes,
-      edges: [...existingEdges, ...newEdges],
-    });
+      edges: mergedEdges,
+      views: withUpdatedView(state.currentView, { nodes: newNodes, edges: mergedEdges }, state.views),
+    }));
   },
 
   replaceDiagram: (nodes: RFNode[], connections: { from: string; to: string; label?: string }[]) => {
-    const nodeIdSet = new Set(nodes.map((node) => node.id));
+    // Deduplicate incoming nodes by id (preserve last occurrence)
+    const uniqueNodes = Array.from(new Map(nodes.map((node) => [node.id, node])).values());
+    const nodeIdSet = new Set(uniqueNodes.map((node) => node.id));
+    // Helper to compute absolute position of a node (accounts for parent groups with extent: 'parent')
+    const nodeMap = new Map<string, RFNode>(uniqueNodes.map((n) => [n.id, n]));
+    const computeAbsolutePosition = (nodeId: string, map: Map<string, RFNode>, cache = new Map<string, { x: number; y: number }>()): { x: number; y: number } | null => {
+      if (cache.has(nodeId)) return cache.get(nodeId)!;
+      const node = map.get(nodeId);
+      if (!node || !node.position) return null;
+      let abs = { x: node.position.x, y: node.position.y };
+      const nodeMeta = node as unknown as Record<string, unknown>;
+      const parentIdCandidate =
+        typeof nodeMeta.parentId === 'string'
+          ? (nodeMeta.parentId as string)
+          : typeof nodeMeta.parentNode === 'string'
+          ? (nodeMeta.parentNode as string)
+          : undefined;
+      if (parentIdCandidate && map.has(parentIdCandidate)) {
+        const parentAbs = computeAbsolutePosition(parentIdCandidate, map, cache);
+        if (parentAbs) {
+          abs = { x: parentAbs.x + abs.x, y: parentAbs.y + abs.y };
+        }
+      }
+      cache.set(nodeId, abs);
+      return abs;
+    };
+
+    const chooseHandle = (fromPos: { x: number; y: number }, toPos: { x: number; y: number }, role: 'source' | 'target') => {
+      const dx = toPos.x - fromPos.x;
+      const dy = toPos.y - fromPos.y;
+      const angle = Math.atan2(dy, dx);
+      const PI = Math.PI;
+      if (angle > -PI / 4 && angle <= PI / 4) {
+        return `right-${role}`;
+      }
+      if (angle > PI / 4 && angle <= (3 * PI) / 4) {
+        return `bottom-${role}`;
+      }
+      if (angle > (3 * PI) / 4 || angle <= -((3 * PI) / 4)) {
+        return `left-${role}`;
+      }
+      return `top-${role}`;
+    };
+
     const sanitizedEdges = connections
       .filter((conn) => nodeIdSet.has(conn.from) && nodeIdSet.has(conn.to))
-      .map((conn, index) => ({
-        id: `ai-edge-${index}`,
-        source: conn.from,
-        target: conn.to,
-        type: 'animated',
-        label: conn.label,
-        data: { animated: true },
-      }));
+      .map((conn, index) => {
+        const absCache = new Map<string, { x: number; y: number }>();
+        const sourcePos = computeAbsolutePosition(conn.from, nodeMap, absCache) || nodeMap.get(conn.from)?.position;
+        const targetPos = computeAbsolutePosition(conn.to, nodeMap, absCache) || nodeMap.get(conn.to)?.position;
+
+        let sourceHandle: string | undefined;
+        let targetHandle: string | undefined;
+        try {
+          if (sourcePos && targetPos) {
+            sourceHandle = chooseHandle(sourcePos, targetPos, 'source');
+            targetHandle = chooseHandle(sourcePos, targetPos, 'target');
+          }
+        } catch (err) {
+          // ignore and leave handles undefined
+        }
+
+        return {
+          id: `ai-edge-${index}`,
+          source: conn.from,
+          target: conn.to,
+          type: 'animated',
+          label: conn.label,
+          data: { animated: true },
+          ...(sourceHandle ? { sourceHandle } : {}),
+          ...(targetHandle ? { targetHandle } : {}),
+        } as Edge;
+      });
 
     console.log('[DiagramStore] Replacing diagram state', {
       nodeCount: nodes.length,
@@ -207,11 +311,12 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       appliedEdges: sanitizedEdges.length,
     });
 
-    set({
-      nodes,
+    set((state) => ({
+      nodes: uniqueNodes,
       edges: sanitizedEdges,
       selectedNode: null,
-    });
+      views: withUpdatedView(state.currentView, { nodes: uniqueNodes, edges: sanitizedEdges }, state.views),
+    }));
   },
 
   loadDiagram: (nodes: RFNode[], edges: Edge[]) => {
@@ -220,10 +325,22 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       edgeCount: edges.length,
     });
 
+    // Deduplicate nodes by id to avoid duplicate React keys (MiniMap warnings)
+    const uniqueNodes = Array.from(new Map(nodes.map((node) => [node.id, node])).values());
+    const nodeIdSet = new Set(uniqueNodes.map((n) => n.id));
+    // Filter edges to those that reference existing nodes
+    const filteredEdges = Array.isArray(edges)
+      ? edges.filter((e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target))
+      : [];
+
     set({
-      nodes,
-      edges,
+      nodes: uniqueNodes,
+      edges: filteredEdges,
       selectedNode: null,
+      currentView: 'source',
+      views: {
+        source: { nodes: uniqueNodes, edges: filteredEdges },
+      },
     });
   },
 
@@ -232,6 +349,8 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       nodes: [],
       edges: [],
       selectedNode: null,
+      currentView: 'source',
+      views: { source: { nodes: [], edges: [] } },
     });
   },
 
@@ -248,79 +367,89 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     const newSelected = currentSelected && currentSelected.id === nodeId
       ? newNodes.find((n) => n.id === nodeId) || currentSelected
       : currentSelected;
-    set({
+    set((state) => ({
       nodes: newNodes,
       selectedNode: newSelected,
-    });
+      views: withUpdatedView(state.currentView, { nodes: newNodes, edges: state.edges }, state.views),
+    }));
   },
   // Remove an edge by id
   removeEdge: (edgeId: string) => {
-    set({
-      edges: get().edges.filter((e) => e.id !== edgeId),
+    set((state) => {
+      const edges = state.edges.filter((e) => e.id !== edgeId);
+      return {
+        edges,
+        views: withUpdatedView(state.currentView, { nodes: state.nodes, edges }, state.views),
+      };
     });
   },
 
   // Update an edge's label or data
   updateEdgeLabel: (edgeId: string, label?: string, data?: Record<string, unknown> | undefined) => {
-    const newEdges = get().edges.map((edge) =>
-      edge.id === edgeId ? { ...edge, label: label ?? edge.label, data: { ...(edge.data || {}), ...(data || {}) } } : edge
-    );
-    set({ edges: newEdges });
+    set((state) => {
+      const newEdges = state.edges.map((edge) =>
+        edge.id === edgeId ? { ...edge, label: label ?? edge.label, data: { ...(edge.data || {}), ...(data || {}) } } : edge
+      );
+      return {
+        edges: newEdges,
+        views: withUpdatedView(state.currentView, { nodes: state.nodes, edges: newEdges }, state.views),
+      };
+    });
   },
 
-  // Set which edge is being edited (for modal)
-  setEditingEdgeId: (edgeId: string | null) => {
-    set({ editingEdgeId: edgeId });
+  updateEdgeConnection: (edgeId, connection) => {
+    set((state) => {
+      const newEdges = state.edges.map((edge) => {
+        if (edge.id !== edgeId) {
+          return edge;
+        }
+        return {
+          ...edge,
+          source: connection.source ?? edge.source,
+          target: connection.target ?? edge.target,
+          sourceHandle: connection.sourceHandle ?? undefined,
+          targetHandle: connection.targetHandle ?? undefined,
+        };
+      });
+      return {
+        edges: newEdges,
+        views: withUpdatedView(state.currentView, { nodes: state.nodes, edges: newEdges }, state.views),
+      };
+    });
   },
 
-  // Z-index management functions
-  bringNodeToFront: (nodeId: string) => {
-    const nodes = get().nodes;
-    const maxZIndex = Math.max(...nodes.map(n => (n.style?.zIndex as number) || 0), 0);
-    const newNodes = nodes.map(node =>
-      node.id === nodeId
-        ? { ...node, style: { ...node.style, zIndex: maxZIndex + 1 } }
-        : node
-    );
-    set({ nodes: newNodes });
+  setViewSnapshot: (view, nodes, edges) => {
+    set((state) => {
+      const updatedViews = withUpdatedView(view, { nodes, edges }, state.views);
+      if (view === state.currentView) {
+        return {
+          nodes,
+          edges,
+          selectedNode: null,
+          views: updatedViews,
+        };
+      }
+      return { views: updatedViews };
+    });
   },
 
-  sendNodeToBack: (nodeId: string) => {
-    const nodes = get().nodes;
-    const minZIndex = Math.min(...nodes.map(n => (n.style?.zIndex as number) || 0), 0);
-    const newNodes = nodes.map(node =>
-      node.id === nodeId
-        ? { ...node, style: { ...node.style, zIndex: minZIndex - 1 } }
-        : node
-    );
-    set({ nodes: newNodes });
+  switchView: (view) => {
+    set((state) => {
+      const snapshot = state.views[view];
+      if (!snapshot) {
+        console.warn('[DiagramStore] Requested view missing snapshot', view);
+        return {};
+      }
+      return {
+        currentView: view,
+        nodes: snapshot.nodes,
+        edges: snapshot.edges,
+        selectedNode: null,
+      };
+    });
   },
 
-  bringNodeForward: (nodeId: string) => {
-    const nodes = get().nodes;
-    const targetNode = nodes.find(n => n.id === nodeId);
-    if (!targetNode) return;
-
-    const currentZIndex = (targetNode.style?.zIndex as number) || 0;
-    const newNodes = nodes.map(node =>
-      node.id === nodeId
-        ? { ...node, style: { ...node.style, zIndex: currentZIndex + 1 } }
-        : node
-    );
-    set({ nodes: newNodes });
-  },
-
-  sendNodeBackward: (nodeId: string) => {
-    const nodes = get().nodes;
-    const targetNode = nodes.find(n => n.id === nodeId);
-    if (!targetNode) return;
-
-    const currentZIndex = (targetNode.style?.zIndex as number) || 0;
-    const newNodes = nodes.map(node =>
-      node.id === nodeId
-        ? { ...node, style: { ...node.style, zIndex: currentZIndex - 1 } }
-        : node
-    );
-    set({ nodes: newNodes });
+  setIsGenerating: (isGenerating) => {
+    set({ isGenerating });
   },
 }));

@@ -3,7 +3,8 @@
 from fastapi import APIRouter
 
 from app.api.endpoints import projects_simple, chat_simple, diagram_analysis
-from app.api.endpoints import deployment, iac_mcp, runs
+from app.api.endpoints import deployment, iac_mcp, runs, validation, autopilot, compliance, docs
+from app.api.endpoints import reverse_engineering, migration, cost, fix
 
 # iac endpoints depend on optional agent/azure libraries. Import lazily so the
 # main app can start in dev environments where those deps may be missing.
@@ -61,3 +62,11 @@ else:
 		api_router.include_router(iac_shim.router, prefix="/iac", tags=["iac"])
 api_router.include_router(deployment.router, prefix="/deployment", tags=["deployment"])
 api_router.include_router(iac_mcp.router, prefix="/iac/mcp", tags=["iac-mcp"])
+api_router.include_router(validation.router, prefix="", tags=["validation"])
+api_router.include_router(autopilot.router, prefix="", tags=["autopilot"])
+api_router.include_router(compliance.router, prefix="", tags=["compliance"])
+api_router.include_router(docs.router, prefix="", tags=["docs"])
+api_router.include_router(reverse_engineering.router, prefix="", tags=["reverse-engineering"])
+api_router.include_router(migration.router, prefix="", tags=["migration"])
+api_router.include_router(cost.router, prefix="", tags=["cost"])
+api_router.include_router(fix.router, prefix="", tags=["fix"])

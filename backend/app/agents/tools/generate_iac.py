@@ -23,6 +23,20 @@ OpenAIResponsesClient = cast(TypingAny, globals().get('OpenAIResponsesClient') o
 logger = logging.getLogger(__name__)
 
 
+def _mcp_enabled(agent: AzureArchitectAgent, key: str) -> bool:
+    """
+    Determine if a given MCP integration is enabled for the agent.
+
+    Falls back to the agent's stored integration preferences when the helper
+    isn't available (e.g., older agent instances).
+    """
+    try:
+        return bool(agent.should_use_mcp(key))
+    except AttributeError:
+        prefs = getattr(agent, "_integration_preferences", {}) or {}
+        return bool(prefs.get("mcp", {}).get(key, False))
+
+
 async def generate_bicep_code(self: AzureArchitectAgent, architecture_description: Union[str, Dict[str, Any]], include_monitoring: bool = True, include_security: bool = True) -> Dict[str, Any]:
     """Compatibility wrapper used by the /api/iac endpoint.
 
@@ -233,6 +247,8 @@ async def generate_bicep_via_mcp(self: AzureArchitectAgent, diagram: dict, regio
     """
     if not self.chat_agent:
         raise RuntimeError("Agent not initialized")
+    if not _mcp_enabled(self, "bicep"):
+        raise RuntimeError("Azure Bicep MCP disabled for this project")
 
     try:
         # Import and get MCP tool
@@ -267,10 +283,20 @@ async def generate_bicep_via_mcp(self: AzureArchitectAgent, diagram: dict, regio
         
         prompt = f"{instruction}\n\nDiagram Data: {json.dumps(payload, separators=(',',':'))}"
 
+        tools_to_use = mcp_tool
+        if _mcp_enabled(self, "docs"):
+            try:
+                from app.deps import get_microsoft_docs_mcp_tool
+                docs_tool = await get_microsoft_docs_mcp_tool()
+                if docs_tool:
+                    tools_to_use = [mcp_tool, docs_tool]
+            except Exception:
+                pass
+
         # Run with MCP tool available by passing the tool into the run call
         # Note: agent_framework expects tools to be passed either at agent
         # creation or per-run; we provide the streamable MCP tool here.
-        resp = await self.chat_agent.run(prompt, tools=mcp_tool)
+        resp = await self.chat_agent.run(prompt, tools=tools_to_use)
         text = getattr(resp, "result", str(resp))
 
         # Robust JSON extraction (same as standard method)
@@ -315,6 +341,8 @@ async def validate_bicep_with_mcp(self: AzureArchitectAgent, bicep_code: str) ->
     """
     if not self.chat_agent:
         return {"valid": False, "errors": ["Agent not initialized"]}
+    if not _mcp_enabled(self, "bicep"):
+        raise RuntimeError("Azure Bicep MCP disabled for this project")
 
     try:
         from app.deps import get_mcp_bicep_tool
@@ -365,6 +393,8 @@ async def generate_terraform_via_mcp(self: AzureArchitectAgent, diagram: dict, p
     if not self.chat_agent:
         logger.warning("Agent not initialized, falling back to standard generation")
         return await self.generate_terraform_code({"diagram": diagram, "provider": provider})
+    if not _mcp_enabled(self, "terraform"):
+        raise RuntimeError("Terraform MCP disabled for this project")
 
     try:
         from app.deps import get_mcp_terraform_tool
@@ -425,6 +455,8 @@ async def validate_terraform_with_mcp(self: AzureArchitectAgent, terraform_code:
     """
     if not self.chat_agent:
         return {"valid": False, "errors": ["Agent not initialized"]}
+    if not _mcp_enabled(self, "terraform"):
+        raise RuntimeError("Terraform MCP disabled for this project")
 
     try:
         from app.deps import get_mcp_terraform_tool
@@ -473,6 +505,8 @@ async def get_terraform_provider_info_via_mcp(self: AzureArchitectAgent, provide
     """
     if not self.chat_agent:
         return {"error": "Agent not initialized"}
+    if not _mcp_enabled(self, "terraform"):
+        raise RuntimeError("Terraform MCP disabled for this project")
 
     try:
         from app.deps import get_mcp_terraform_tool

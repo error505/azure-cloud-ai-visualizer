@@ -1,4 +1,4 @@
-const API_BASE_URL = '';
+export const API_BASE_URL = 'http://localhost:8000';
 
 export async function generateIac(diagramData: unknown, targetFormat: 'bicep'|'terraform', options?: { providerVersion?: string; workspace?: string; namingConvention?: string; requiredProviders?: string; variables?: string; remoteBackend?: string; initAndValidate?: boolean }) {
   // Include top-level service-config map to help backend deterministic generator

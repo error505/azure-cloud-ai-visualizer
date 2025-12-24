@@ -1,9 +1,14 @@
 import { Icon } from '@iconify/react';
 import { useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDiagramStore } from '@/store/diagramStore';
 import { useIacStore } from '@/store/iacStore';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 interface IaCFileBrief {
   id: string;
@@ -18,18 +23,87 @@ interface IaCFileBrief {
   parameters?: Record<string, unknown>;
 }
 
+interface CloudMigrationPriceRow {
+  node_id?: string;
+  aws_service?: string;
+  gcp_service?: string;
+  azure_service?: string;
+  currency?: string;
+  aws_monthly?: number | null;
+  gcp_monthly?: number | null;
+  azure_monthly?: number | null;
+  delta?: number | null;
+  assumptions?: string;
+  savings_percent?: number | null;
+}
+
+interface CloudMigrationCostSummary {
+  currency?: string;
+  aws_monthly_total?: number;
+  gcp_monthly_total?: number;
+  azure_monthly_total?: number;
+  delta?: number;
+  savings?: number;
+  savings_percent?: number | null;
+  verdict?: string;
+  summary_markdown?: string;
+  per_service?: CloudMigrationPriceRow[];
+}
+
 interface JobsDrawerProps {
   files?: IaCFileBrief[];
   onDownload?: (file: IaCFileBrief) => void;
   onDeploy?: (file: IaCFileBrief) => void;
-  height?: number;
 }
 
-const JobsDrawer = ({ files = [], onDownload, onDeploy, height = 192 }: JobsDrawerProps) => {
+const formatCurrencyValue = (value?: number, currency = 'USD') => {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+  return `${currency} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+const formatPercent = (value?: number | null) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'n/a';
+  }
+  return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
+};
+
+const CostBar = ({
+  label,
+  value = 0,
+  max = 1,
+  colorClass,
+  currency = 'USD',
+}: {
+  label: string;
+  value?: number | null;
+  max?: number;
+  colorClass: string;
+  currency?: string;
+}) => {
+  const safeValue = typeof value === 'number' && value >= 0 ? value : 0;
+  const percent = max > 0 ? Math.max(6, (safeValue / max) * 100) : 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span>{formatCurrencyValue(value ?? undefined, currency)}</span>
+      </div>
+      <div className="h-2 rounded-full bg-muted/60">
+        <div className={`h-2 rounded-full transition-all ${colorClass}`} style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+};
+
+const JobsDrawer = ({ files = [], onDownload, onDeploy }: JobsDrawerProps) => {
   const [selectedFileId, setSelectedFileId] = useState<string | null>(files.length ? files[0].id : null);
   const nodes = useDiagramStore((state) => state.nodes);
   const edges = useDiagramStore((state) => state.edges);
   const currentBicepTemplate = useIacStore((state) => state.currentBicepTemplate);
+  const [showCostModal, setShowCostModal] = useState(false);
 
   const selectedFile = files.find((f) => f.id === selectedFileId) ?? files[0] ?? null;
 
@@ -73,6 +147,49 @@ const JobsDrawer = ({ files = [], onDownload, onDeploy, height = 192 }: JobsDraw
     };
   }, [currentBicepTemplate, edges.length, files, nodes]);
 
+  const migrationCost = useMemo(() => {
+    for (const file of files) {
+      const params = file.parameters;
+      if (!params || typeof params !== 'object') continue;
+      
+      // Check for AWS migration first
+      const awsMigration = (params as Record<string, unknown>).aws_migration;
+      if (awsMigration && typeof awsMigration === 'object') {
+        const payload = awsMigration as Record<string, unknown>;
+        const costSummary = payload.cost_summary as CloudMigrationCostSummary | undefined;
+        const priceRows = (payload.price_summary as CloudMigrationPriceRow[]) || [];
+        if (costSummary && (costSummary.aws_monthly_total ?? costSummary.azure_monthly_total) !== undefined) {
+          return {
+            costSummary,
+            priceRows: costSummary.per_service ?? priceRows,
+            sourceFile: file.name,
+          };
+        }
+      }
+      
+      // Check for GCP migration
+      const gcpMigration = (params as Record<string, unknown>).gcp_migration;
+      if (gcpMigration && typeof gcpMigration === 'object') {
+        const payload = gcpMigration as Record<string, unknown>;
+        const costSummary = payload.cost_summary as CloudMigrationCostSummary | undefined;
+        const priceRows = (payload.price_summary as CloudMigrationPriceRow[]) || [];
+        if (costSummary && (costSummary.gcp_monthly_total ?? costSummary.azure_monthly_total) !== undefined) {
+          // Adapt GCP cost summary to match AWS structure for UI compatibility
+          const adaptedSummary = {
+            ...costSummary,
+            aws_monthly_total: costSummary.gcp_monthly_total,
+          };
+          return {
+            costSummary: adaptedSummary,
+            priceRows: costSummary.per_service ?? priceRows,
+            sourceFile: file.name,
+          };
+        }
+      }
+    }
+    return null;
+  }, [files]);
+
   const SummaryCard = ({
     icon,
     label,
@@ -99,11 +216,7 @@ const JobsDrawer = ({ files = [], onDownload, onDeploy, height = 192 }: JobsDraw
   );
 
   return (
-    <div 
-      className="glass-panel border-t border-border/50" 
-      style={{ height: `${height}px` }}
-      data-resizable-footer
-    >
+    <div className="glass-panel border-t border-border/50 h-48">
       <Tabs defaultValue="summary" className="h-full flex flex-col">
         <TabsList className="mx-4 mt-3 grid w-auto grid-cols-4">
           <TabsTrigger value="summary" className="gap-2">
@@ -167,6 +280,76 @@ const JobsDrawer = ({ files = [], onDownload, onDeploy, height = 192 }: JobsDraw
                     helper={`${summary.warningCount} warnings • ${summary.errorCount} errors`}
                   />
                 </div>
+
+                {migrationCost?.costSummary && (
+                  <div className="rounded-xl border border-border/40 bg-background/60 p-4 shadow-sm shadow-black/5 space-y-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                          Migration cost outlook
+                        </p>
+                        <p className="text-base font-semibold text-foreground">
+                          {migrationCost.costSummary.verdict || 'Cost comparison generated'}
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => setShowCostModal(true)}>
+                        <Icon icon="mdi:finance" className="mr-1" />
+                        View cost analysis
+                      </Button>
+                    </div>
+                    <div className="space-y-3">
+                      <CostBar
+                        label="AWS monthly"
+                        value={migrationCost.costSummary.aws_monthly_total}
+                        max={Math.max(
+                          migrationCost.costSummary.aws_monthly_total ?? 0,
+                          migrationCost.costSummary.azure_monthly_total ?? 0,
+                          1
+                        )}
+                        colorClass="bg-orange-500"
+                        currency={migrationCost.costSummary.currency}
+                      />
+                      <CostBar
+                        label="Azure monthly"
+                        value={migrationCost.costSummary.azure_monthly_total}
+                        max={Math.max(
+                          migrationCost.costSummary.aws_monthly_total ?? 0,
+                          migrationCost.costSummary.azure_monthly_total ?? 0,
+                          1
+                        )}
+                        colorClass="bg-primary"
+                        currency={migrationCost.costSummary.currency}
+                      />
+                      <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+                        <span>
+                          Delta:{' '}
+                          <strong className="text-foreground">
+                            {formatCurrencyValue(
+                              migrationCost.costSummary.delta,
+                              migrationCost.costSummary.currency
+                            )}
+                          </strong>
+                        </span>
+                        <span>
+                          Savings:{' '}
+                          <strong
+                            className={`text-foreground ${
+                              (migrationCost.costSummary.savings ?? 0) >= 0
+                                ? 'text-emerald-500'
+                                : 'text-destructive'
+                            }`}
+                          >
+                            {formatCurrencyValue(
+                              migrationCost.costSummary.savings,
+                              migrationCost.costSummary.currency
+                            )}{' '}
+                            ({formatPercent(migrationCost.costSummary.savings_percent)})
+                          </strong>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {summary.hasBicepTemplate ? (
                   <div className="rounded-lg border border-border/40 bg-muted/5 px-4 py-3">
@@ -296,7 +479,150 @@ const JobsDrawer = ({ files = [], onDownload, onDeploy, height = 192 }: JobsDraw
           </TabsContent>
         </ScrollArea>
       </Tabs>
+      <MigrationCostModal
+        open={showCostModal && !!migrationCost?.costSummary}
+        onOpenChange={setShowCostModal}
+        summary={migrationCost?.costSummary ?? null}
+        priceRows={migrationCost?.priceRows ?? []}
+      />
     </div>
+  );
+};
+
+interface MigrationCostModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  summary: CloudMigrationCostSummary | null;
+  priceRows: CloudMigrationPriceRow[];
+}
+
+const MigrationCostModal = ({ open, onOpenChange, summary, priceRows }: MigrationCostModalProps) => {
+  if (!summary) {
+    return null;
+  }
+
+  const maxValue = Math.max(summary.aws_monthly_total ?? 0, summary.azure_monthly_total ?? 0, 1);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>Migration Cost Analysis</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border/40 p-4">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Verdict</p>
+              <p className="text-base font-semibold text-foreground mt-1">{summary.verdict}</p>
+              <div className="mt-2 grid grid-cols-2 gap-4 text-sm text-muted-foreground">
+                <div>
+                  <div className="text-[11px] uppercase">AWS monthly</div>
+                  <div className="text-foreground font-semibold">
+                    {formatCurrencyValue(summary.aws_monthly_total, summary.currency)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase">Azure monthly</div>
+                  <div className="text-foreground font-semibold">
+                    {formatCurrencyValue(summary.azure_monthly_total, summary.currency)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase">Delta</div>
+                  <div className="text-foreground font-semibold">
+                    {formatCurrencyValue(summary.delta, summary.currency)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase">Savings</div>
+                  <div
+                    className={`font-semibold ${
+                      (summary.savings ?? 0) >= 0 ? 'text-emerald-500' : 'text-destructive'
+                    }`}
+                  >
+                    {formatCurrencyValue(summary.savings, summary.currency)} ({formatPercent(summary.savings_percent)})
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/40 p-4 space-y-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Cost breakdown</p>
+              <CostBar
+                label="AWS monthly"
+                value={summary.aws_monthly_total}
+                max={maxValue}
+                colorClass="bg-orange-500"
+                currency={summary.currency}
+              />
+              <CostBar
+                label="Azure monthly"
+                value={summary.azure_monthly_total}
+                max={maxValue}
+                colorClass="bg-primary"
+                currency={summary.currency}
+              />
+            </div>
+            <div className="rounded-lg border border-border/40 p-4">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Summary</p>
+              <div className="prose prose-sm dark:prose-invert mt-2 text-foreground">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {summary.summary_markdown || '_No summary provided._'}
+                </ReactMarkdown>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border/40">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border/30">
+              <div>
+                <p className="text-sm font-semibold text-foreground">Per-service comparison</p>
+                <p className="text-xs text-muted-foreground">Assumptions: list values are monthly estimates</p>
+              </div>
+              {summary.savings_percent !== null && (
+                <Badge variant={(summary.savings ?? 0) >= 0 ? 'secondary' : 'destructive'}>
+                  {formatPercent(summary.savings_percent)}
+                </Badge>
+              )}
+            </div>
+            <ScrollArea className="max-h-80">
+              <div className="divide-y divide-border/40">
+                {priceRows.length === 0 && (
+                  <div className="p-4 text-sm text-muted-foreground">No service-level data available.</div>
+                )}
+                {priceRows.map((row, idx) => (
+                  <div key={`${row.node_id}-${idx}`} className="p-4 text-sm space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-foreground">
+                          {row.azure_service || row.aws_service || 'Service'}
+                        </p>
+                        {row.aws_service && row.azure_service && row.aws_service !== row.azure_service && (
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            from {row.aws_service}
+                          </p>
+                        )}
+                      </div>
+                      {typeof row.savings_percent === 'number' && (
+                        <Badge variant={(row.savings_percent ?? 0) >= 0 ? 'secondary' : 'destructive'}>
+                          {formatPercent(row.savings_percent)}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-[12px] text-muted-foreground">
+                      <span>AWS: {formatCurrencyValue(row.aws_monthly, row.currency)}</span>
+                      <span>Azure: {formatCurrencyValue(row.azure_monthly, row.currency)}</span>
+                      <span>Delta: {formatCurrencyValue(row.delta, row.currency)}</span>
+                    </div>
+                    {row.assumptions && (
+                      <p className="text-[11px] text-muted-foreground">Assumes {row.assumptions}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 };
 

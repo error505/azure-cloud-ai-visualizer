@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
 from app.core.azure_client import AzureClientManager
+from app.utils.integration_settings import normalize_integration_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -81,8 +82,13 @@ async def send_message(
         if chat_request.conversation_history:
             conversation_history.extend(chat_request.conversation_history)
 
-        # Get the agent
+        # Get the agent and configure integration preferences if provided
         agent = azure_clients.get_azure_architect_agent()
+        integration_settings = normalize_integration_settings(
+            (chat_request.context or {}).get("integration_settings") if isinstance(chat_request.context, dict) else None
+        )
+        if hasattr(agent, "set_integration_preferences"):
+            agent.set_integration_preferences(integration_settings)
 
         # Send message to agent with contextual summary/history
         response_text = await agent.chat(

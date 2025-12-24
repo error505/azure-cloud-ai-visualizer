@@ -1,7 +1,6 @@
 import { memo } from 'react';
 import { NodeResizer } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
-import NodeLayerToolbar from '@/components/layout/NodeLayerToolbar';
 
 type GroupAccent =
   | 'region'
@@ -57,15 +56,13 @@ const friendlyTypeLabel: Record<GroupAccent, string> = {
   default: 'Grouped Resources',
 };
 
-const AzureGroupNode = ({ data, selected, id }: NodeProps) => {
+const AzureGroupNode = ({ data, selected }: NodeProps) => {
   const nodeData = (data || {}) as AzureGroupNodeData;
   const groupType = (nodeData.groupType as GroupAccent) || 'default';
   const accent = groupAccentClasses[groupType] || groupAccentClasses.default;
 
   return (
-    <>
-      <NodeLayerToolbar nodeId={id} isVisible={selected} />
-      <div
+    <div
       className={`
         relative h-full w-full rounded-3xl border-2 border-dashed
         ${accent}
@@ -117,8 +114,7 @@ const AzureGroupNode = ({ data, selected, id }: NodeProps) => {
         <span>Drag resources here</span>
         <span>Resize corners to fit</span>
       </div>
-      </div>
-    </>
+    </div>
   );
 };
 

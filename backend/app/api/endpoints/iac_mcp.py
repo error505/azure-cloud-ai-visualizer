@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 
 from app.core.azure_client import AzureClientManager
+from app.iac_generators.aws_migration import migrate_aws_diagram
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -63,15 +64,27 @@ async def generate_iac_mcp(
     """Generate IaC using MCP-enhanced Azure Bicep tools."""
     try:
         agent = azure_clients.get_azure_architect_agent()
+        migration = migrate_aws_diagram(request_data.diagram)
+        diagram = migration.diagram
         
         # Generate Bicep using MCP enhancement
         result = await agent.generate_bicep_via_mcp(
-            diagram=request_data.diagram,
+            diagram=diagram,
             region=request_data.region
         )
         
         bicep_code = result.get("bicep_code", "")
-        parameters = result.get("parameters", {})
+        parameters = result.get("parameters", {}) or {}
+        if migration.applied or migration.unmapped_services:
+            migration_payload = {
+                "converted_nodes": migration.converted_nodes,
+                "price_summary": migration.price_summary,
+                "cost_summary": migration.cost_summary,
+                "bicep_snippets": migration.bicep_snippets,
+                "unmapped_services": migration.unmapped_services,
+                "azure_diagram": migration.diagram,
+            }
+            parameters.setdefault("aws_migration", {}).update(migration_payload)
         
         # Optional validation using MCP
         validation = {}
@@ -127,17 +140,28 @@ async def generate_terraform_mcp(
     """Generate Terraform using MCP-enhanced HashiCorp tools."""
     try:
         agent = azure_clients.get_azure_architect_agent()
+        migration = migrate_aws_diagram(request_data.diagram)
+        diagram = migration.diagram
         
         # Generate Terraform using MCP enhancement
         result = await agent.generate_terraform_via_mcp(
-            diagram=request_data.diagram,
+            diagram=diagram,
             provider=request_data.provider
         )
         
         terraform_code = result.get("terraform_code", "")
         variables = result.get("variables", {})
         outputs = result.get("outputs", {})
-        parameters = result.get("parameters", {"provider": request_data.provider})
+        parameters = result.get("parameters", {"provider": request_data.provider}) or {"provider": request_data.provider}
+        if migration.applied or migration.unmapped_services:
+            migration_payload = {
+                "converted_nodes": migration.converted_nodes,
+                "price_summary": migration.price_summary,
+                "bicep_snippets": migration.bicep_snippets,
+                "unmapped_services": migration.unmapped_services,
+                "azure_diagram": migration.diagram,
+            }
+            parameters.setdefault("aws_migration", {}).update(migration_payload)
         
         # Optional validation using MCP
         validation = {}

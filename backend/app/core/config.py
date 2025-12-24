@@ -1,7 +1,7 @@
 """Configuration settings for the Azure Architect Backend."""
 
 from typing import Any, List
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     
     # OpenAI (fallback for easier testing)
     OPENAI_API_KEY: str | None = Field(default=None, description="OpenAI API key for fallback")
-    OPENAI_MODEL: str = Field(default="gpt-4o", description="OpenAI model to use")
+    OPENAI_MODEL: str = Field(default="gpt-4o-mini", description="OpenAI model to use (gpt-4o-mini supports true streaming)")
     USE_OPENAI_FALLBACK: bool = Field(default=False, description="Use OpenAI instead of Azure OpenAI when available")
     
     # Azure configuration (optional when using OpenAI fallback)
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     
     # Azure AI Project (for MAF)
     AZURE_AI_PROJECT_ENDPOINT: str | None = Field(default=None, description="Azure AI project endpoint")
-    AZURE_AI_MODEL_DEPLOYMENT_NAME: str = Field(default="gpt-4o", description="Model deployment name")
+    AZURE_AI_MODEL_DEPLOYMENT_NAME: str = Field(default="gpt-4o-mini", description="Model deployment name")
     
     # Azure OpenAI (alternative)
     AZURE_OPENAI_ENDPOINT: str | None = Field(default=None, description="Azure OpenAI endpoint")
@@ -49,21 +49,11 @@ class Settings(BaseSettings):
     # Application settings
     ENVIRONMENT: str = Field(default="development", description="Environment name")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
-    CORS_ORIGINS: str | List[str] = Field(
-        default="http://localhost:5173,http://localhost:3000",
-        description="CORS allowed origins (comma-separated or JSON array)"
+    CORS_ORIGINS: List[str] = Field(
+        default=["http://localhost:5173", "http://localhost:3000"],
+        description="CORS allowed origins"
     )
-    
-    @field_validator('CORS_ORIGINS', mode='before')
-    @classmethod
-    def parse_cors_origins(cls, v: Any) -> List[str]:
-        """Parse CORS_ORIGINS from comma-separated string or list."""
-        if isinstance(v, str):
-            # Split by comma and strip whitespace
-            return [origin.strip() for origin in v.split(',') if origin.strip()]
-        elif isinstance(v, list):
-            return v
-        return ["http://localhost:5173", "http://localhost:3000"]
+    FRONTEND_BASE_URL: str = Field(default="http://localhost:8080/app", description="Frontend base URL (including path) for share links")
     
     # Chat and WebSocket
     CHAT_MAX_HISTORY: int = Field(default=50, description="Max chat history messages")
@@ -74,18 +64,18 @@ class Settings(BaseSettings):
     BICEP_OUTPUT_FORMAT: str = Field(default="json", description="Bicep output format")
     TERRAFORM_VERSION: str = Field(default="1.5.0", description="Terraform version")
     
-    # MCP Integration
+    # MCP Integration (disabled by default - enable via frontend integration settings)
     AZURE_MCP_BICEP_URL: str = Field(
-        default="https://learn.microsoft.com/api/mcp/tools/azure-bicep-schema",
-        description="Azure Bicep MCP server endpoint"
+        default="",
+        description="Azure Bicep MCP server endpoint (leave blank to disable)"
     )
     TERRAFORM_MCP_URL: str = Field(
-        default="https://developer.hashicorp.com/terraform/mcp-server",
-        description="HashiCorp Terraform MCP server endpoint"
+        default="",
+        description="HashiCorp Terraform MCP server endpoint (leave blank to disable)"
     )
     MICROSOFT_LEARN_MCP_URL: str = Field(
-        default="https://learn.microsoft.com/api/mcp",
-        description="Microsoft Learn documentation MCP endpoint"
+        default="",
+        description="Microsoft Learn documentation MCP endpoint (leave blank to disable)"
     )
     
     # Deployment

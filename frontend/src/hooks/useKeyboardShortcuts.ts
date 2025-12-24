@@ -7,10 +7,6 @@ export const useKeyboardShortcuts = (callbacks: {
   onDuplicate?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
-  onBringToFront?: () => void;
-  onSendToBack?: () => void;
-  onBringForward?: () => void;
-  onSendBackward?: () => void;
 }) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -51,30 +47,6 @@ export const useKeyboardShortcuts = (callbacks: {
         if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA') {
           callbacks.onDelete?.();
         }
-      }
-
-      // Bring to Front: Ctrl/Cmd + Shift + ]
-      if (isMod && e.shiftKey && e.key === ']') {
-        e.preventDefault();
-        callbacks.onBringToFront?.();
-      }
-
-      // Send to Back: Ctrl/Cmd + Shift + [
-      if (isMod && e.shiftKey && e.key === '[') {
-        e.preventDefault();
-        callbacks.onSendToBack?.();
-      }
-
-      // Bring Forward: Ctrl/Cmd + ]
-      if (isMod && !e.shiftKey && e.key === ']') {
-        e.preventDefault();
-        callbacks.onBringForward?.();
-      }
-
-      // Send Backward: Ctrl/Cmd + [
-      if (isMod && !e.shiftKey && e.key === '[') {
-        e.preventDefault();
-        callbacks.onSendBackward?.();
       }
     };
 

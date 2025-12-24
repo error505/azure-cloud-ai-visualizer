@@ -8,6 +8,10 @@ import iconIndex from '@/data/azureIconIndex.json';
 import { ParsedGroupType } from './types';
 import {GROUP_TITLE_KEYWORDS} from './groupTitleKeywords';
 import {SERVICE_TO_ICON_MAPPINGS} from './serviceToIconMapper';
+import AWS_SERVICE_TO_ICON_MAPPINGS from './awsServiceToIconMapper';
+import awsIconIndex from '@/data/awsIconIndex.json';
+import GCP_SERVICE_TO_ICON_MAPPINGS from './gcpServiceToIconMapper';
+import gcpIconIndex from '@/data/gcpIconIndex.json';
 import { patterns, connectionPatterns, bicepResourcePatterns, serviceNamePatterns } from './patterns';
 
 type IconEntry = { title?: string; file?: string; id?: string };
@@ -15,12 +19,20 @@ type IconCategory = { icons?: IconEntry[] };
 type IconIndex = { categories?: IconCategory[] };
 import { BicepResourceMapper, BICEP_RESOURCE_MAPPINGS } from './bicepResourceMapper';
 
+export interface ServiceLayoutHint {
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+}
+
 export interface ParsedArchitecture {
   services: AzureService[];
   connections: { from: string; to: string; label?: string }[];
-  layout: 'horizontal' | 'vertical' | 'grid';
+  layout: 'horizontal' | 'vertical' | 'grid' | 'manual';
   groups?: ParsedGroup[];
   bicepResources?: { resourceType: string; resourceName: string }[];
+  serviceLayouts?: Record<string, ServiceLayoutHint>;
 }
 
 
@@ -90,6 +102,7 @@ export class ArchitectureParser {
       value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
     const services: AzureService[] = [];
+    const serviceLayouts: Record<string, ServiceLayoutHint> = {};
     const groups: ParsedGroup[] = [];
     const connections: { from: string; to: string; label?: string }[] = [];
 
@@ -226,13 +239,46 @@ export class ArchitectureParser {
     };
 
     rawServices.forEach((entry) => {
-      if (!entry || typeof entry !== 'object') {
+      if (!entry) {
         return;
       }
-      const serviceEntry = entry as Record<string, unknown>;
+
+      // Support simple string entries like ["Azure Front Door", "Azure Firewall"]
+      const serviceEntry: Record<string, unknown> =
+        typeof entry === 'string'
+          ? { title: entry }
+          : typeof entry === 'object'
+          ? (entry as Record<string, unknown>)
+          : {};
+      if (Object.keys(serviceEntry).length === 0) {
+        return;
+      }
       const explicitId = toStringSafe(serviceEntry.id);
       const title = toStringSafe(serviceEntry.title);
       const pendingGroupIds: string[] = [];
+      const position = serviceEntry.position;
+      const size = serviceEntry.data;
+      const layoutHint: Partial<ServiceLayoutHint> = {};
+      if (position && typeof position === 'object') {
+        const posObj = position as Record<string, unknown>;
+        const x = typeof posObj.x === 'number' ? posObj.x : undefined;
+        const y = typeof posObj.y === 'number' ? posObj.y : undefined;
+        if (typeof x === 'number' && typeof y === 'number') {
+          layoutHint.x = x;
+          layoutHint.y = y;
+        }
+      }
+      if (size && typeof size === 'object') {
+        const dimObj = size as Record<string, unknown>;
+        const width = typeof dimObj.width === 'number' ? dimObj.width : undefined;
+        const height = typeof dimObj.height === 'number' ? dimObj.height : undefined;
+        if (typeof width === 'number') {
+          layoutHint.width = width;
+        }
+        if (typeof height === 'number') {
+          layoutHint.height = height;
+        }
+      }
       const rawGroupIds = serviceEntry.groupIds ?? serviceEntry.groupId ?? serviceEntry.groups;
       if (Array.isArray(rawGroupIds)) {
         rawGroupIds.forEach((groupIdCandidate) => {
@@ -270,12 +316,20 @@ export class ArchitectureParser {
           category: toStringSafe(serviceEntry.category) || 'AI Detected',
           categoryId: toStringSafe(serviceEntry.categoryId) || 'ai-detected',
           title: fallbackTitle,
-          iconPath: '',
+          iconPath: '/Icons/generic-service.svg',
           description: toStringSafe(serviceEntry.description) || 'Detected by AI from structured response',
           publicIp: null,
           privateIp: null,
         };
         const canonicalId = stub.id;
+        if (layoutHint.x !== undefined && layoutHint.y !== undefined) {
+          serviceLayouts[canonicalId] = {
+            x: layoutHint.x,
+            y: layoutHint.y,
+            ...(layoutHint.width ? { width: layoutHint.width } : {}),
+            ...(layoutHint.height ? { height: layoutHint.height } : {}),
+          };
+        }
         if (isContainer(canonicalId, fallbackTitle)) {
           ensureContainerGroup(stub, uniqueGroupIds);
           return;
@@ -297,6 +351,14 @@ export class ArchitectureParser {
       };
 
       const canonicalId = clone.id;
+      if (layoutHint.x !== undefined && layoutHint.y !== undefined) {
+        serviceLayouts[canonicalId] = {
+          x: layoutHint.x,
+          y: layoutHint.y,
+          ...(layoutHint.width ? { width: layoutHint.width } : {}),
+          ...(layoutHint.height ? { height: layoutHint.height } : {}),
+        };
+      }
       if (isContainer(canonicalId, clone.title)) {
         ensureContainerGroup(clone, uniqueGroupIds);
         return;
@@ -421,8 +483,8 @@ export class ArchitectureParser {
         return;
       }
       const connectionEntry = entry as Record<string, unknown>;
-      const fromId = resolveConnectionId(connectionEntry.from ?? connectionEntry.source);
-      const toId = resolveConnectionId(connectionEntry.to ?? connectionEntry.target);
+      const fromId = resolveConnectionId(connectionEntry.from ?? connectionEntry.source ?? connectionEntry.from_service);
+      const toId = resolveConnectionId(connectionEntry.to ?? connectionEntry.target ?? connectionEntry.to_service);
       if (fromId && toId && fromId !== toId) {
         connections.push({
           from: fromId,
@@ -469,9 +531,12 @@ export class ArchitectureParser {
     }
 
     const layoutRaw = toStringSafe(diagram.layout);
+    const hasExplicitLayout = Object.keys(serviceLayouts).length > 0;
     const layout: ParsedArchitecture['layout'] =
-      layoutRaw && (layoutRaw === 'horizontal' || layoutRaw === 'vertical' || layoutRaw === 'grid')
+      layoutRaw && (layoutRaw === 'horizontal' || layoutRaw === 'vertical' || layoutRaw === 'grid' || layoutRaw === 'manual')
         ? layoutRaw
+        : hasExplicitLayout
+        ? 'manual'
         : services.length <= 3
         ? 'horizontal'
         : services.length <= 6
@@ -487,6 +552,7 @@ export class ArchitectureParser {
       connections,
       groups,
       layout,
+      ...(hasExplicitLayout ? { serviceLayouts } : {}),
     };
   }
 
@@ -520,18 +586,18 @@ export class ArchitectureParser {
     
     // Extract mentioned Azure services
     const mentionedServices = this.extractServices(response);
-    console.log('🔍 Extracted service names:', mentionedServices);
+    console.log('?? Extracted service names:', mentionedServices);
     
     // Find actual Azure service objects
     for (const serviceName of mentionedServices) {
       const azureService = this.findAzureService(serviceName);
-      console.log(`🎯 Looking for "${serviceName}" -> Found:`, azureService?.title || 'NOT FOUND');
+      console.log(`?? Looking for "${serviceName}" -> Found:`, azureService?.title || 'NOT FOUND');
       if (azureService && !services.find(s => s.id === azureService.id)) {
         services.push(azureService);
       }
     }
     
-    console.log('✅ Final services for diagram:', services.map(s => s.title));
+    console.log('? Final services for diagram:', services.map(s => s.title));
     
     // Extract connections from text patterns
     const extractedConnections = this.extractConnections(response, services);
@@ -941,8 +1007,13 @@ export class ArchitectureParser {
       }
     });
     
-    // Check for service mappings using comprehensive mappings
-    Object.keys(SERVICE_TO_ICON_MAPPINGS).forEach(serviceName => {
+    // Check for service mappings using comprehensive mappings (Azure + AWS)
+    Object.keys(SERVICE_TO_ICON_MAPPINGS).forEach((serviceName) => {
+      if (lowerText.includes(serviceName)) {
+        services.push(serviceName);
+      }
+    });
+    Object.keys(AWS_SERVICE_TO_ICON_MAPPINGS).forEach((serviceName) => {
       if (lowerText.includes(serviceName)) {
         services.push(serviceName);
       }
@@ -981,20 +1052,47 @@ export class ArchitectureParser {
   private static findAzureService(serviceName: string): AzureService | null {
     const normalizedName = serviceName.toLowerCase();
     
-    console.log(`🔍 Looking for service: "${serviceName}" (normalized: "${normalizedName}")`);
+    console.log(`?? Looking for service: "${serviceName}" (normalized: "${normalizedName}")`);
+    
+    // Manual normalization for common Azure terms to avoid ontology mismatches
+    const manualNormalization: Record<string, string> = {
+      'azure vpn gateway': 'virtual network gateways',
+      'vpn gateway': 'virtual network gateways',
+      'virtual network gateways': 'virtual network gateways',
+      'azure application gateway': 'application gateways',
+      'application gateway': 'application gateways',
+      'azure front door': 'front door and cdn profiles',
+      'azure web application firewall': 'web application firewall policies(waf)',
+      'azure firewall': 'azure firewall',
+      'hub virtual network': 'virtual network',
+      'wordpress on azure': 'wordpress',
+    };
+    const manualHit = Object.keys(manualNormalization).find((key) => normalizedName.includes(key));
+    if (manualHit) {
+      const target = manualNormalization[manualHit];
+      const manualService = azureServices.find(
+        (s) =>
+          (s.title || '').toLowerCase() === target ||
+          (s.id || '').toLowerCase().includes(target.replace(/\s+/g, '-')) ||
+          (s.type || '').toLowerCase().includes(target.replace(/\s+/g, ''))
+      );
+      if (manualService) {
+        return manualService;
+      }
+    }
     
     // Try direct mapping to icon titles first
     const exactIconTitle = SERVICE_TO_ICON_MAPPINGS[normalizedName];
     if (exactIconTitle) {
-      console.log(`✅ Found exact mapping: "${normalizedName}" -> "${exactIconTitle}"`);
+      console.log(`? Found exact mapping: "${normalizedName}" -> "${exactIconTitle}"`);
       const service = azureServices.find(s => 
         (s.title || '').toLowerCase() === exactIconTitle.toLowerCase()
       );
       if (service) {
-        console.log(`✅ Found Azure service:`, service.title);
+        console.log(`? Found Azure service:`, service.title);
         return service;
       } else {
-        console.log(`❌ No Azure service found for icon title: "${exactIconTitle}"`);
+        console.log(`? No Azure service found for icon title: "${exactIconTitle}"`);
       }
     }
     
@@ -1005,12 +1103,12 @@ export class ArchitectureParser {
     );
     
     if (bicepMapping) {
-      console.log(`✅ Found Bicep mapping:`, bicepMapping);
+      console.log(`? Found Bicep mapping:`, bicepMapping);
       const service = azureServices.find(s => 
         (s.title || '').toLowerCase() === bicepMapping.iconTitle.toLowerCase()
       );
       if (service) {
-        console.log(`✅ Found Azure service from Bicep mapping:`, service.title);
+        console.log(`? Found Azure service from Bicep mapping:`, service.title);
         return service;
       }
     }
@@ -1046,19 +1144,30 @@ export class ArchitectureParser {
     });
     
     if (fuzzyMatch) {
-      console.log(`🎯 Found fuzzy match: "${serviceName}" -> "${fuzzyMatch.title}"`);
+      console.log(`?? Found fuzzy match: "${serviceName}" -> "${fuzzyMatch.title}"`);
       return fuzzyMatch;
     }
     
-    // Ontology / icon-index based best-score fallback
-    const ontologyMatch = this.findBestIconMatch(normalizedName);
-    if (ontologyMatch) {
-      console.log(`🎯 Found ontology/icon-index match: "${serviceName}" -> "${ontologyMatch.title}"`);
-      return ontologyMatch;
-    }
+    console.log(`? No service found for: "${serviceName}" - creating custom stub`);
 
-    console.log(`❌ No service found for: "${serviceName}"`);
-    return null;
+    // Create a generic custom stub so the UI can show a node even when the
+    // LLM can't be mapped to a known provider icon. This gives the user a
+    // visible placeholder and allows them to edit title/description later.
+    const slug = normalizedName.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const humanTitle = serviceName && typeof serviceName === 'string' ? serviceName : `Custom Service`;
+    const customStub: AzureService = {
+      id: `ai:${slug || 'custom'}`,
+      type: `ai.detected/${slug || 'custom'}`,
+      category: 'Custom',
+      categoryId: 'custom',
+      title: humanTitle,
+      // Use a generic icon so custom stubs are visible in the UI
+      iconPath: '/Icons/general/10805-icon-service-Gear.svg',
+      description: 'Custom service detected  description unavailable',
+      publicIp: null,
+      privateIp: null,
+    };
+    return customStub;
   }
 
   // Cache for icon titles extracted from azureIconIndex.json
@@ -1117,6 +1226,98 @@ export class ArchitectureParser {
     }
 
     return null;
+  }
+
+  /**
+   * Attempt to resolve AWS service names to a minimal stub AzureService-shaped object
+   * using our AWS mappings and the generated awsIconIndex.json. This allows the
+   * UI to render an iconPath for AWS services even though they are not part of
+   * the Azure services list.
+   */
+  private static findAwsService(serviceName: string): AzureService | null {
+    if (!serviceName || typeof serviceName !== 'string') return null;
+    const normalized = serviceName.toLowerCase().trim();
+
+    // Try exact mapping first
+    const mappedTitle = AWS_SERVICE_TO_ICON_MAPPINGS[normalized];
+    let resolvedTitle = mappedTitle;
+
+    // If no exact mapping, try to find a mapping whose key is contained in the name
+    if (!resolvedTitle) {
+      for (const [key, title] of Object.entries(AWS_SERVICE_TO_ICON_MAPPINGS)) {
+        if (normalized.includes(key)) {
+          resolvedTitle = title;
+          break;
+        }
+      }
+    }
+
+    if (!resolvedTitle) return null;
+
+    // Lookup path from generated awsIconIndex.json (may be empty before generation)
+    const iconPath = (awsIconIndex as Record<string, string>)[resolvedTitle] || '';
+
+    // Build a minimal stub compatible with AzureService interface used across the app
+    const titleHuman = resolvedTitle.replace(/^Arch_/, '').replace(/_/g, ' ').replace(/-/g, ' ');
+    const stub: AzureService = {
+      id: `aws:${resolvedTitle}`,
+      type: `aws.${resolvedTitle}`,
+      category: 'AWS',
+      categoryId: 'aws',
+      title: titleHuman,
+      iconPath: iconPath,
+      description: 'Detected AWS service (icon stub)',
+      publicIp: null,
+      privateIp: null,
+    };
+
+    return stub;
+  }
+
+  /**
+   * Attempt to resolve GCP service names to a minimal stub AzureService-shaped object
+   * using our GCP mappings and the generated gcpIconIndex.json. This allows the
+   * UI to render an iconPath for GCP services even though they are not part of
+   * the Azure services list.
+   */
+  private static findGcpService(serviceName: string): AzureService | null {
+    if (!serviceName || typeof serviceName !== 'string') return null;
+    const normalized = serviceName.toLowerCase().trim();
+
+    // Try exact mapping first
+    const mappedTitle = GCP_SERVICE_TO_ICON_MAPPINGS[normalized];
+    let resolvedTitle = mappedTitle;
+
+    // If no exact mapping, try to find a mapping whose key is contained in the name
+    if (!resolvedTitle) {
+      for (const [key, title] of Object.entries(GCP_SERVICE_TO_ICON_MAPPINGS)) {
+        if (normalized.includes(key)) {
+          resolvedTitle = title;
+          break;
+        }
+      }
+    }
+
+    if (!resolvedTitle) return null;
+
+    // Lookup path from generated gcpIconIndex.json (may be empty before generation)
+    const iconPath = (gcpIconIndex as Record<string, string>)[resolvedTitle] || '';
+
+    // Build a minimal stub compatible with AzureService interface used across the app
+    const titleHuman = resolvedTitle.replace(/[-_]+/g, ' ').replace(/Arch\s*/i, '').trim();
+    const stub: AzureService = {
+      id: `gcp:${resolvedTitle}`,
+      type: `gcp.${resolvedTitle}`,
+      category: 'GCP',
+      categoryId: 'gcp',
+      title: titleHuman,
+      iconPath: iconPath,
+      description: 'Detected GCP service (icon stub)',
+      publicIp: null,
+      privateIp: null,
+    };
+
+    return stub;
   }
 
   /**
@@ -1270,9 +1471,38 @@ export class ArchitectureParser {
    * Generate React Flow nodes from parsed architecture
    */
   static generateNodes(architecture: ParsedArchitecture): Node[] {
+    const layoutHints = architecture.serviceLayouts || {};
+    const hasManualLayout = Object.keys(layoutHints).length > 0;
+
+    if (hasManualLayout) {
+      // If upstream provided explicit coordinates, honor them and skip auto-layout/group packing.
+      // This prevents the ReactFlow graph from collapsing into columns.
+      return this.generateManualNodes(architecture, layoutHints);
+    }
+
     const { groups } = architecture;
     if (groups && groups.length > 0) {
       return this.generateGroupedNodes(architecture);
+    }
+
+    // Try to derive a flow layout from connections when no groups/manual positions are present
+    const flowPositions = this.deriveFlowLayout(architecture);
+    if (flowPositions) {
+      return architecture.services.map((service, idx) => {
+        const pos = flowPositions.get(service.id) || { x: idx * 260, y: 120 };
+        return {
+          id: service.id,
+          type: 'azure.service',
+          position: pos,
+          data: {
+            title: service.title,
+            subtitle: service.description,
+            iconPath: service.iconPath,
+            status: 'active' as const,
+            service,
+          },
+        };
+      });
     }
 
     const nodes: Node[] = [];
@@ -1290,12 +1520,125 @@ export class ArchitectureParser {
           subtitle: service.description,
           iconPath: service.iconPath,
           status: 'active' as const,
+          badges: service.badges,
           service, // Keep the original service object for reference
         },
       });
     });
     
     return nodes;
+  }
+
+  private static generateManualNodes(architecture: ParsedArchitecture, layoutHints: Record<string, ServiceLayoutHint>): Node[] {
+    const nodes: Node[] = [];
+    architecture.services.forEach((service, index) => {
+      const hint = layoutHints[service.id];
+      const position =
+        hint && typeof hint.x === 'number' && typeof hint.y === 'number'
+          ? { x: hint.x, y: hint.y }
+          : this.calculateNodePosition(index, architecture.services.length, architecture.layout);
+
+      nodes.push({
+        id: service.id,
+        type: 'azure.service',
+        position,
+        data: {
+          title: service.title,
+          subtitle: service.description,
+          iconPath: service.iconPath,
+          status: 'active' as const,
+          service,
+        },
+        ...(hint?.width || hint?.height
+          ? { style: { width: hint.width ?? undefined, height: hint.height ?? undefined } }
+          : {}),
+      });
+    });
+    return nodes;
+  }
+
+  /**
+   * Derive a left-to-right layered layout from connection structure.
+   * Useful when a vision extractor returns services + connections but no positions/groups.
+   */
+  private static deriveFlowLayout(architecture: ParsedArchitecture): Map<string, { x: number; y: number }> | null {
+    const { services, connections } = architecture;
+    if (!services || services.length === 0 || !connections || connections.length === 0) {
+      return null;
+    }
+
+    const idSet = new Set(services.map((s) => s.id));
+    const adj = new Map<string, Set<string>>();
+    const indegree = new Map<string, number>();
+
+    services.forEach((s) => {
+      adj.set(s.id, new Set<string>());
+      indegree.set(s.id, 0);
+    });
+
+    connections.forEach((c) => {
+      if (!idSet.has(c.from) || !idSet.has(c.to)) return;
+      if (!adj.has(c.from)) adj.set(c.from, new Set<string>());
+      const set = adj.get(c.from)!;
+      if (!set.has(c.to)) {
+        set.add(c.to);
+        indegree.set(c.to, (indegree.get(c.to) || 0) + 1);
+      }
+    });
+
+    // Topological layering (Kahn)
+    const queue: string[] = [];
+    indegree.forEach((deg, id) => {
+      if (deg === 0) queue.push(id);
+    });
+    if (queue.length === 0) {
+      // Fall back if a cycle blocks layout
+      queue.push(...services.map((s) => s.id));
+    }
+
+    const layer = new Map<string, number>();
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const currentLayer = layer.get(current) ?? 0;
+      for (const nxt of adj.get(current) || []) {
+        const nextLayer = Math.max(layer.get(nxt) ?? 0, currentLayer + 1);
+        layer.set(nxt, nextLayer);
+        indegree.set(nxt, (indegree.get(nxt) || 1) - 1);
+        if ((indegree.get(nxt) || 0) === 0) {
+          queue.push(nxt);
+        }
+      }
+      if (!layer.has(current)) {
+        layer.set(current, currentLayer);
+      }
+    }
+
+    // Group by layer to spread vertically with consistent spacing
+    const byLayer = new Map<number, string[]>();
+    Array.from(layer.entries()).forEach(([id, l]) => {
+      const arr = byLayer.get(l) || [];
+      arr.push(id);
+      byLayer.set(l, arr);
+    });
+
+    const positions = new Map<string, { x: number; y: number }>();
+    const layerWidth = 480;
+    const rowGap = 240;
+    const baseX = 150;
+    const baseY = 150;
+
+    Array.from(byLayer.entries()).forEach(([l, ids]) => {
+      // Stable order: sort by id to keep consistency
+      ids.sort();
+      const count = ids.length;
+      ids.forEach((id, idx) => {
+        // Spread vertically; keep center anchored so singletons don't stack at top
+        const yOffset = (idx - (count - 1) / 2) * rowGap;
+        positions.set(id, { x: baseX + l * layerWidth, y: baseY + yOffset });
+      });
+    });
+
+    return positions;
   }
 
   private static generateGroupedNodes(architecture: ParsedArchitecture): Node[] {
@@ -1381,11 +1724,11 @@ export class ArchitectureParser {
 
     const SERVICE_WIDTH = 190;
     const SERVICE_HEIGHT = 120;
-    const PADDING_X = 48;
-    const PADDING_TOP = 72;
-    const GROUP_GAP = 48;
-    const SERVICE_GAP_X = 32;
-    const SERVICE_GAP_Y = 40;
+    const PADDING_X = 60;
+    const PADDING_TOP = 80;
+    const GROUP_GAP = 60;
+    const SERVICE_GAP_X = 80;
+    const SERVICE_GAP_Y = 50;
 
     const layoutInfoMap = new Map<string, GroupLayoutInfo>();
 
@@ -1454,15 +1797,10 @@ export class ArchitectureParser {
       }
 
       const serviceCount = serviceIds.length;
-      const columns =
-        serviceCount > 0 ? Math.min(3, Math.max(1, Math.ceil(Math.sqrt(serviceCount)))) : 1;
-      const serviceRows = serviceCount > 0 ? Math.ceil(serviceCount / columns) : 0;
+      // Layout services in a single horizontal row with generous spacing
       const serviceAreaWidth =
-        serviceCount > 0 ? columns * SERVICE_WIDTH + Math.max(0, columns - 1) * SERVICE_GAP_X : 0;
-      const serviceAreaHeight =
-        serviceRows > 0
-          ? serviceRows * SERVICE_HEIGHT + Math.max(0, serviceRows - 1) * SERVICE_GAP_Y
-          : 0;
+        serviceCount > 0 ? serviceCount * SERVICE_WIDTH + Math.max(0, serviceCount - 1) * SERVICE_GAP_X : 0;
+      const serviceAreaHeight = serviceCount > 0 ? SERVICE_HEIGHT : 0;
 
       const nestedWidth =
         measuredChildGroups.length > 0
@@ -1476,21 +1814,21 @@ export class ArchitectureParser {
             }, 0)
           : 0;
 
-      const innerWidth = Math.max(serviceAreaWidth, nestedWidth, SERVICE_WIDTH);
-      const width = Math.max(innerWidth + PADDING_X * 2, 360);
+      const innerWidth = Math.max(serviceAreaWidth, nestedWidth, 400);
+      const width = Math.max(innerWidth + PADDING_X * 2, 500);
       const height =
         PADDING_TOP +
         serviceAreaHeight +
         (serviceAreaHeight > 0 && nestedHeight > 0 ? GROUP_GAP : 0) +
         nestedHeight +
-        56;
+        60;
 
       const computed: GroupLayoutInfo = {
         width,
         height,
         serviceIds,
         childGroupIds,
-        columns,
+        columns: 1, // Single row layout
       };
 
       layoutInfoMap.set(groupId, computed);
@@ -1569,8 +1907,12 @@ export class ArchitectureParser {
 
       nodes.push(groupNode);
 
-      const innerWidth = layoutInfo.width - PADDING_X * 2;
-      const serviceColumns = Math.max(1, layoutInfo.columns);
+      // Layout services horizontally in a single row with generous spacing
+      const serviceCount = layoutInfo.serviceIds.length;
+      const totalServiceWidth = serviceCount * SERVICE_WIDTH;
+      const totalGapWidth = Math.max(0, serviceCount - 1) * SERVICE_GAP_X;
+      const servicesAreaWidth = totalServiceWidth + totalGapWidth;
+      const startX = PADDING_X + Math.max(0, (layoutInfo.width - PADDING_X * 2 - servicesAreaWidth) / 2);
 
       layoutInfo.serviceIds.forEach((serviceId, index) => {
         const service = serviceMap.get(serviceId);
@@ -1581,14 +1923,8 @@ export class ArchitectureParser {
           return;
         }
 
-        const column = index % serviceColumns;
-        const row = Math.floor(index / serviceColumns);
-
-        const xOffset =
-          PADDING_X +
-          column * (innerWidth / serviceColumns) +
-          Math.max(0, (innerWidth / serviceColumns - SERVICE_WIDTH) / 2);
-        const yOffset = PADDING_TOP + row * (SERVICE_HEIGHT + SERVICE_GAP_Y);
+        const xOffset = startX + index * (SERVICE_WIDTH + SERVICE_GAP_X);
+        const yOffset = PADDING_TOP;
 
         nodes.push({
           id: service.id,
@@ -1609,8 +1945,7 @@ export class ArchitectureParser {
       let currentY =
         PADDING_TOP +
         (layoutInfo.serviceIds.length > 0
-          ? Math.ceil(layoutInfo.serviceIds.length / serviceColumns) *
-              (SERVICE_HEIGHT + SERVICE_GAP_Y)
+          ? SERVICE_HEIGHT + SERVICE_GAP_Y
           : 0);
 
       if (layoutInfo.serviceIds.length > 0 && layoutInfo.childGroupIds.length > 0) {
@@ -1621,6 +1956,7 @@ export class ArchitectureParser {
         const childInfo = layoutInfoMap.get(childId);
         if (!childInfo) return;
 
+        const innerWidth = layoutInfo.width - PADDING_X * 2;
         const childX =
           PADDING_X + Math.max(0, (innerWidth - childInfo.width) / 2);
         const childY = currentY;
@@ -1704,6 +2040,28 @@ export class ArchitectureParser {
       });
     }
 
+    const MIN_MARGIN = 60;
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    nodes.forEach((node) => {
+      if (node.position) {
+        minX = Math.min(minX, node.position.x);
+        minY = Math.min(minY, node.position.y);
+      }
+    });
+    const shiftX = minX === Number.POSITIVE_INFINITY ? 0 : Math.max(0, MIN_MARGIN - minX);
+    const shiftY = minY === Number.POSITIVE_INFINITY ? 0 : Math.max(0, MIN_MARGIN - minY);
+    if (shiftX || shiftY) {
+      nodes.forEach((node) => {
+        if (node.position) {
+          node.position = {
+            x: node.position.x + shiftX,
+            y: node.position.y + shiftY,
+          };
+        }
+      });
+    }
+
     return nodes;
   }
   
@@ -1713,19 +2071,19 @@ export class ArchitectureParser {
   private static calculateNodePosition(
     index: number, 
     total: number, 
-    layout: 'horizontal' | 'vertical' | 'grid'
+    layout: 'horizontal' | 'vertical' | 'grid' | 'manual'
   ): { x: number; y: number } {
     switch (layout) {
       case 'horizontal':
         return {
-          x: index * 250,
-          y: 100,
+          x: 150 + index * 450,
+          y: 120,
         };
       
       case 'vertical':
         return {   
-          x: 100,
-          y: index * 150,
+          x: 150,
+          y: 120 + index * 200,
         };
       
       case 'grid': {
@@ -1733,8 +2091,18 @@ export class ArchitectureParser {
         const row = Math.floor(index / cols);
         const col = index % cols;
         return {
-          x: col * 250,
-          y: row * 150,
+          x: 150 + col * 400,
+          y: 120 + row * 220,
+        };
+      }
+      case 'manual': {
+        // If manual layout nodes are missing coordinates, fall back to a gentle grid.
+        const cols = Math.ceil(Math.sqrt(total || 1));
+        const row = Math.floor(index / cols);
+        const col = index % cols;
+        return {
+          x: 150 + col * 400,
+          y: 120 + row * 220,
         };
       }
       
@@ -1743,6 +2111,7 @@ export class ArchitectureParser {
     }
   }
 }
+
 
 
 

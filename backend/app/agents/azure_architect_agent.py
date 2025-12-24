@@ -8,6 +8,7 @@ This module implements the Microsoft Agent Framework integration for:
 - Tool calling for canvas operations
 """
 
+import copy
 import json
 import logging
 from typing import Any, Dict, List, Optional, Union
@@ -17,6 +18,7 @@ from app.agents.tools.generate_reactflow_diagram import generate_reactflow_diagr
 from app.agents.tools.analyze_image_for_architecture import analyze_image_for_architecture
 from app.agents.landing_zone_team import LandingZoneTeam
 from typing import Any as TypingAny, cast
+from app.agents.diagram_guide_prompts import instructions
 try:
     from agent_framework import ChatAgent, ChatMessage, TextContent, UriContent
 except Exception:
@@ -55,7 +57,7 @@ except Exception:
     class OpenAIAssistantsClient:  # placeholder
         pass
 
-    class OpenAIResponsesClient:  # placeholder
+    class OpenAIChatClient:  # placeholder
         pass
 
 # To keep static type checkers happy in environments where the real
@@ -68,7 +70,7 @@ TextContent = TypingAny if TextContent is None else TextContent
 UriContent = TypingAny if UriContent is None else UriContent
 AzureAIAgentClient = cast(TypingAny, globals().get('AzureAIAgentClient') or TypingAny)
 OpenAIAssistantsClient = cast(TypingAny, globals().get('OpenAIAssistantsClient') or TypingAny)
-OpenAIResponsesClient = cast(TypingAny, globals().get('OpenAIResponsesClient') or TypingAny)
+OpenAIChatClient = cast(TypingAny, globals().get('OpenAIChatClient') or TypingAny)
 
 logger = logging.getLogger(__name__)
 
@@ -84,13 +86,21 @@ class AzureArchitectAgent:
         self.agent_client = agent_client
         self.chat_agent = None
         self.use_vision = hasattr(agent_client, "create_agent") or hasattr(agent_client, "chat")
+        self._integration_preferences: Dict[str, Dict[str, bool]] = self._default_integration_preferences()
 
     async def _resolve_docs_tool(self):
         """Attempt to load the Microsoft Learn documentation MCP tool."""
+        if not self.should_use_mcp("docs"):
+            logger.debug("[_resolve_docs_tool] docs MCP disabled via integration preferences")
+            return None
         try:
             from app.deps import get_microsoft_docs_mcp_tool
-            return await get_microsoft_docs_mcp_tool()
-        except Exception:
+            tool = await get_microsoft_docs_mcp_tool()
+            if tool:
+                logger.info("[_resolve_docs_tool] docs MCP tool loaded successfully")
+            return tool
+        except Exception as e:
+            logger.debug("[_resolve_docs_tool] failed to load docs MCP tool: %s", e)
             return None
         
     async def initialize(self) -> None:
@@ -104,62 +114,6 @@ class AzureArchitectAgent:
         if self.use_vision:
             tools.append(analyze_image_for_architecture)
         
-        instructions = """You are the Azure Architect Agent, an expert in Azure cloud architecture and Infrastructure as Code.
-
-            Your capabilities include:
-            1. Analyzing ReactFlow diagrams and providing architecture insights
-            2. Generating Bicep Infrastructure as Code from diagrams
-            3. Creating deployment plans for Azure resources
-            4. Generating ReactFlow diagrams from natural language descriptions
-            5. Analyzing uploaded architecture images (vision-enabled)
-            6. Providing best practices and recommendations
-
-            When users ask about their architecture:
-            - Ask for the diagram JSON if not provided
-            - Analyze the components and connections
-            - Suggest improvements and best practices
-            - Generate appropriate IaC templates
-            - Help plan deployments step by step
-            - Create visual diagrams from descriptions
-            - Analyze uploaded architecture images when provided
-
-            When you describe or refine an architecture, ALWAYS include a section titled `Diagram JSON` followed by a fenced ```json block. The JSON must be valid and follow this schema:
-
-            {
-            "services": [
-                {
-                "id": "<azure icon id e.g. analytics/00039-icon-service-Event-Hubs>",
-                "title": "<Azure service title matching the icon id>",
-                "category": "<Azure category name>",
-                "description": "<short usage note>",
-                "groupIds": ["<group id that contains this service>"]
-                }
-            ],
-            "groups": [
-                {
-                "id": "<azure icon id for the grouping, e.g. general/10011-icon-service-Management-Groups>",
-                "label": "<friendly label>",
-                "type": "<one of managementGroup|subscription|region|landingZone|resourceGroup|virtualNetwork|subnet|cluster|networkSecurityGroup|securityBoundary|policyAssignment|roleAssignment|default>",
-                "parentId": "<optional parent group id>",
-                "members": ["<ids of services or nested groups>"]
-                }
-            ],
-            "connections": [
-                { "from": "<service id>", "to": "<service id>", "label": "<data/control flow>" }
-            ]
-            }
-
-            Rules for the JSON:
-            - `id` values must reference real Azure icon identifiers used by the application (as seen in the Azure icon index). Use the exact strings so the frontend can resolve icons.
-            - Every service should belong to the appropriate group hierarchy by listing `groupIds`, and each group should list the same members in its `members` array.
-            - Provide connections for each meaningful integration (ingest, process, store, visualize, secure, etc.).
-            - Do NOT duplicate the same identifier in both `services` and `groups` unless that resource genuinely acts as a container. Prefer modelling containers via the `groups` array.
-            - Keep the JSON well-formed. Avoid comments or trailing commas.
-            - Do **not** repeat container resources (management groups, subscriptions, landing zones, virtual networks, subnets, clusters, etc.) in the `services` array. Represent them only in `groups`.
-            - Enumerate every meaningful integration or data/control flow in the `connections` array so the canvas can render the full topology.
-
-            Always prioritize security, scalability, and cost optimization in your recommendations.
-            Use the available tools to analyze diagrams, generate code, and create visualizations when requested."""
 
         # Create agent with appropriate client
         # Create agent using whichever client API is available. Use getattr
@@ -182,9 +136,35 @@ class AzureArchitectAgent:
         
         logger.info(f"Azure Architect MAF Agent initialized successfully (Vision: {self.use_vision})")
 
+    def _default_integration_preferences(self) -> Dict[str, Dict[str, bool]]:
+        return {
+            "mcp": {
+                "bicep": False,
+                "terraform": False,
+                "docs": False,
+            }
+        }
+
+    def set_integration_preferences(self, preferences: Optional[Dict[str, Any]]) -> None:
+        merged = self._default_integration_preferences()
+        if isinstance(preferences, dict):
+            mcp_settings = preferences.get("mcp")
+            if isinstance(mcp_settings, dict):
+                merged["mcp"]["bicep"] = bool(mcp_settings.get("bicep", merged["mcp"]["bicep"]))
+                merged["mcp"]["terraform"] = bool(mcp_settings.get("terraform", merged["mcp"]["terraform"]))
+                merged["mcp"]["docs"] = bool(mcp_settings.get("docs", merged["mcp"]["docs"]))
+        self._integration_preferences = merged
+
+    def get_integration_preferences(self) -> Dict[str, Dict[str, bool]]:
+        return copy.deepcopy(self._integration_preferences)
+
+    def should_use_mcp(self, key: str) -> bool:
+        return bool(self._integration_preferences.get("mcp", {}).get(key, False))
+
         
     async def chat_team(self, message: str, parallel_pass: bool = False) -> str:
-        team = LandingZoneTeam(self)
+        agent_config = self._integration_preferences.get("agents", {})
+        team = LandingZoneTeam(self, agent_config=agent_config)
         if parallel_pass:
             return await team.run_with_parallel_pass(message)
         return await team.run_sequential(message)
@@ -201,6 +181,7 @@ class AzureArchitectAgent:
         
         try:
             composed_prompt = self._compose_prompt(message, conversation_history, context)
+            logger.info("[agent-chat] prompt characters=%s", len(composed_prompt))
             response = await self.chat_agent.run(composed_prompt)
             result = getattr(response, "result", None)
             if isinstance(result, str) and result.strip():
@@ -227,10 +208,25 @@ class AzureArchitectAgent:
         try:
             composed_prompt = self._compose_prompt(message, conversation_history, context)
             async for chunk in self.chat_agent.run_stream(composed_prompt):
-                if chunk.delta:
-                    yield chunk.delta
+                # Extract text from AgentRunResponseUpdate
+                text = None
+                if hasattr(chunk, 'text') and chunk.text:
+                    text = str(chunk.text)
+                elif hasattr(chunk, 'data'):
+                    data = chunk.data
+                    if isinstance(data, str):
+                        text = data
+                    elif hasattr(data, 'content') and data.content:
+                        text = str(data.content)
+                
+                if text:
+                    print(f"[AGENT-STREAM] ✓ Token: {repr(text[:50])}")
+                    yield text
                     
         except Exception as e:
+            print(f"[AGENT-STREAM] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             logger.error(f"Error in agent stream chat: {e}")
             yield f"I apologize, but I encountered an error: {str(e)}"
     
@@ -431,7 +427,13 @@ class AzureArchitectAgent:
                                     except Exception:
                                         return None
                         return None
-                    parsed = _extract_json(text) or (json.loads(text) if text.strip().startswith('{') else None)
+                    parsed = _extract_json(text)
+                    if not parsed and text.strip().startswith('{'):
+                        try:
+                            # Try parsing with strict=False to handle escape sequences
+                            parsed = json.loads(text, strict=False)
+                        except Exception:
+                            pass
                     if parsed and isinstance(parsed, dict) and parsed.get("bicep_code"):
                         return {"bicep_code": parsed.get("bicep_code", ""), "parameters": parsed.get("parameters", {})}
                     else:
@@ -485,18 +487,24 @@ class AzureArchitectAgent:
 
             logger.debug("Generating Terraform via MAF agent")
             run_kwargs: Dict[str, Any] = {}
-            docs_tool = await self._resolve_docs_tool()
-            if docs_tool:
-                run_kwargs["tools"] = docs_tool
-            response = await self.chat_agent.run(tf_prompt, **run_kwargs)
-            text = getattr(response, "result", str(response))
+            # Only attempt docs tool if enabled via integration preferences
+            if self.should_use_mcp("docs"):
+                docs_tool = await self._resolve_docs_tool()
+                if docs_tool:
+                    run_kwargs["tools"] = docs_tool
+            resp = await self.chat_agent.run(tf_prompt, **run_kwargs)
+            text = getattr(resp, "result", str(resp))
 
             # Extract JSON from response
             try:
                 start = text.find('{')
                 end = text.rfind('}') + 1
                 if start >= 0 and end > start:
-                    result = json.loads(text[start:end])
+                    json_str = text[start:end]
+                    # Remove control characters that can break JSON parsing
+                    import re
+                    json_str = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
+                    result = json.loads(json_str, strict=False)
                     # Ensure expected structure
                     return {
                         "terraform_code": result.get("terraform_code", ""),
@@ -695,7 +703,11 @@ class AzureArchitectAgent:
                 start = text.find('{')
                 end = text.rfind('}') + 1
                 if start >= 0 and end > start:
-                    parsed = json.loads(text[start:end])
+                    json_str = text[start:end]
+                    # Remove control characters that can break JSON parsing
+                    import re
+                    json_str = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
+                    parsed = json.loads(json_str, strict=False)
                     return {
                         "terraform_code": parsed.get("terraform_code", ""),
                         "variables": parsed.get("variables", {}),
@@ -744,8 +756,11 @@ class AzureArchitectAgent:
                 f"```hcl\n{terraform_code}\n```"
             )
             
-            docs_tool = await self._resolve_docs_tool()
-            tools_to_use = tf_mcp if not docs_tool else [tf_mcp, docs_tool]
+            tools_to_use = [tf_mcp]
+            if self.should_use_mcp("docs"):
+                docs_tool = await self._resolve_docs_tool()
+                if docs_tool:
+                    tools_to_use.append(docs_tool)
             resp = await self.chat_agent.run(prompt, tools=tools_to_use)
             text = getattr(resp, "result", str(resp))
             
@@ -792,8 +807,11 @@ class AzureArchitectAgent:
                 "Return ONLY JSON: {\"provider\": string, \"version\": string, \"resources\": [string], \"data_sources\": [string]}"
             )
             
-            docs_tool = await self._resolve_docs_tool()
-            tools_to_use = tf_mcp if not docs_tool else [tf_mcp, docs_tool]
+            tools_to_use = [tf_mcp]
+            if self.should_use_mcp("docs"):
+                docs_tool = await self._resolve_docs_tool()
+                if docs_tool:
+                    tools_to_use.append(docs_tool)
             resp = await self.chat_agent.run(prompt, tools=tools_to_use)
             text = getattr(resp, "result", str(resp))
             

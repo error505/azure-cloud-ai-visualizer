@@ -1,9 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { IntegrationSettings } from '@/services/projectService';
 import {
   getProjectById,
   updateProjectAzureConversationId,
   upsertConversationMessage,
+  getConversationHistory,
 } from '@/services/projectService';
 import { ArchitectureParser, type ParsedArchitecture } from '@/services/architectureParser';
 
@@ -12,7 +14,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
-  status?: 'sending' | 'sent' | 'error';
+  status?: 'sending' | 'sent' | 'error' | 'streaming';
   meta?: ChatMeta;
 }
 
@@ -39,6 +41,8 @@ export type ChatMeta = {
       [key: string]: unknown;
     } | null;
   };
+  agentName?: string; // Track which agent produced this message
+  visionOnly?: boolean; // Indicates the message came from vision-only image analysis and should not trigger agent workflows
 };
 
 export interface UseChatOptions {
@@ -48,6 +52,7 @@ export interface UseChatOptions {
   supabase?: SupabaseClient;
   projectId?: string;
   teamMode?: boolean;
+  integrationSettings?: IntegrationSettings;
 }
 
 type RunStatus = 'running' | 'completed';
@@ -69,9 +74,26 @@ interface DiagramUpdate {
   iac?: ChatMeta['iac'];
 }
 
+export interface TraceEventRecord {
+  runId: string;
+  stepId: string;
+  agent: string;
+  phase: string;
+  ts: number;
+  meta: Record<string, unknown>;
+  progress: Record<string, unknown>;
+  telemetry: Record<string, unknown>;
+  messageDelta?: string | null;
+  summary?: string | null;
+  error?: string | null;
+}
+
 const GREETING_MESSAGE =
   "Hello! I'm your Azure Architect AI assistant. I can help you design cloud architectures, generate Infrastructure as Code, and analyze your diagrams. How can I assist you today?";
 const RECENT_CONTEXT_LIMIT = 8;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const buildSummary = (history: ChatMessage[]) => {
   const recent = history.slice(-RECENT_CONTEXT_LIMIT);
@@ -99,6 +121,7 @@ export const useChat = (options: UseChatOptions = {}) => {
     supabase,
     projectId,
     teamMode = true,
+    integrationSettings,
   } = options;
 
   const createGreetingMessage = useCallback(
@@ -120,6 +143,8 @@ export const useChat = (options: UseChatOptions = {}) => {
   const [azureConversationId, setAzureConversationId] = useState<string | null>(null);
   const [runState, setRunState] = useState<RunState | null>(null);
   const [latestDiagram, setLatestDiagram] = useState<DiagramUpdate | null>(null);
+  const [traceEventsByRunId, setTraceEventsByRunId] = useState<Record<string, TraceEventRecord[]>>({});
+  const streamingMessageIdsRef = useRef<Map<string, string>>(new Map());
   const lastUserMessageRef = useRef<string | null>(null);
 
   const persistMessage = useCallback(
@@ -128,17 +153,24 @@ export const useChat = (options: UseChatOptions = {}) => {
         return;
       }
       try {
+        const runId = message.meta?.diagram?.runId ?? null;
+        const traceEvents = runId ? traceEventsByRunId[runId] : null;
+        const agentName = message.meta?.agentName ?? null;
+        
         await upsertConversationMessage(supabase, {
           projectId,
           role: message.role,
           content: message.content,
           azureConversationId: explicitConversationId ?? azureConversationId,
+          runId,
+          traceEvents: traceEvents as unknown as Record<string, unknown>[] ?? null,
+          agentName,
         });
       } catch (error) {
         console.error('Failed to persist conversation message', error);
       }
     },
-    [azureConversationId, projectId, supabase]
+    [azureConversationId, projectId, supabase, traceEventsByRunId]
   );
 
   const syncAzureConversationId = useCallback(
@@ -178,6 +210,24 @@ export const useChat = (options: UseChatOptions = {}) => {
           setMessages((prev) => [...prev, assistantMessage]);
           void persistMessage(assistantMessage, azureConversationId);
           setIsTyping(false);
+
+          // Heuristic: if the assistant content contains a Diagram JSON block, surface it for the canvas.
+          if (content.includes('"services"') && content.includes('"groups"')) {
+            try {
+              const jsonMatch = content.match(/```json\\s*({[\\s\\S]*?})\\s*```/i);
+              const rawJson = jsonMatch ? jsonMatch[1] : content;
+              const parsed = JSON.parse(rawJson);
+              setLatestDiagram({
+                messageId: assistantMessage.id,
+                architecture: ArchitectureParser.parseStructuredDiagram(parsed),
+                raw: rawJson,
+                messageText: content,
+                receivedAt: new Date(),
+              });
+            } catch (err) {
+              console.warn('[useChat] Failed to parse inline diagram JSON', err);
+            }
+          }
           return;
         }
 
@@ -191,6 +241,7 @@ export const useChat = (options: UseChatOptions = {}) => {
           if (runId) {
             setRunState({ runId, status: 'running', startedAt: new Date() });
             setIsTyping(true);
+            setTraceEventsByRunId((prev) => ({ ...prev, [runId]: [] }));
           }
           return;
         }
@@ -204,6 +255,124 @@ export const useChat = (options: UseChatOptions = {}) => {
               }
               return prev;
             });
+            const tsValue =
+              typeof data.ts === 'number'
+                ? data.ts
+                : typeof data.ts === 'string'
+                  ? Number(data.ts) || Date.now() / 1000
+                  : Date.now() / 1000;
+            const eventPayload: TraceEventRecord = {
+              runId,
+              stepId:
+                typeof data.step_id === 'string'
+                  ? data.step_id
+                  : data.step_id !== undefined
+                    ? String(data.step_id)
+                    : '0',
+              agent: typeof data.agent === 'string' ? data.agent : 'Agent',
+              phase: typeof data.phase === 'string' ? data.phase : 'delta',
+              ts: tsValue,
+              meta: isPlainObject(data.meta) ? (data.meta as Record<string, unknown>) : {},
+              progress: isPlainObject(data.progress) ? (data.progress as Record<string, unknown>) : {},
+              telemetry: isPlainObject(data.telemetry)
+                ? (data.telemetry as Record<string, unknown>)
+                : {},
+              messageDelta: typeof data.message_delta === 'string' ? data.message_delta : undefined,
+              summary: typeof data.summary === 'string' ? data.summary : undefined,
+              error: typeof data.error === 'string' ? data.error : undefined,
+            };
+            setTraceEventsByRunId((prev) => {
+              const nextEvents = [...(prev[runId] ?? [])];
+              const duplicate = nextEvents.find(
+                (entry) => entry.stepId === eventPayload.stepId && entry.phase === eventPayload.phase && entry.ts === eventPayload.ts
+              );
+              if (!duplicate) {
+                nextEvents.push(eventPayload);
+                nextEvents.sort((a, b) => a.ts - b.ts);
+              }
+              return { ...prev, [runId]: nextEvents };
+            });
+          }
+          return;
+        }
+
+        if (type === 'agent_stream') {
+          const runId = typeof data.run_id === 'string' ? data.run_id : undefined;
+          const agent = typeof data.agent === 'string' ? data.agent : undefined;
+          const chunk = typeof data.message_delta === 'string' ? data.message_delta : '';
+          const phase = typeof data.phase === 'string' ? data.phase : 'delta';
+          if (!runId || !agent) {
+            return;
+          }
+          
+          // Don't accumulate "thinking" messages into content - they're just progress indicators
+          const isThinkingMessage = phase === 'thinking' || chunk.includes('[') && chunk.includes('is analyzing and reasoning');
+          
+          // Show typing indicator when agent is working
+          if (phase === 'start' || phase === 'thinking' || (phase === 'delta' && chunk)) {
+            setIsTyping(true);
+          }
+          
+          setMessages((prev) => {
+            // Use runId + agent name to track individual agent messages
+            const agentKey = `${runId}-${agent}`;
+            const existingId = streamingMessageIdsRef.current.get(agentKey);
+            
+            // Start a new streaming message for this agent if none exists
+            if (!existingId) {
+              const newId = `agent-${agentKey}-${Date.now()}`;
+              streamingMessageIdsRef.current.set(agentKey, newId);
+              const newMsg: ChatMessage = {
+                id: newId,
+                role: 'assistant',
+                content: isThinkingMessage ? '' : chunk,
+                timestamp: new Date(),
+                status: 'streaming',
+                meta: {
+                  diagram: {
+                    structured: null,
+                    raw: null,
+                    runId,
+                  },
+                  agentName: agent, // Store agent name in metadata
+                },
+              };
+              return [...prev, newMsg];
+            }
+            
+            // Accumulate deltas in this agent's message (skip thinking messages)
+            return prev.map((msg) => {
+              if (msg.id !== existingId) {
+                return msg;
+              }
+              const updatedContent = (chunk && !isThinkingMessage) ? `${msg.content || ''}${chunk}` : msg.content;
+              
+              const updated: ChatMessage = {
+                ...msg,
+                content: updatedContent,
+                // Mark as 'sent' when this agent finishes
+                status: phase === 'end' ? 'sent' : phase === 'error' ? 'error' : 'streaming',
+                timestamp: new Date(),
+              };
+              
+              // Persist when this agent completes
+              if (phase === 'end') {
+                streamingMessageIdsRef.current.delete(agentKey);
+                void persistMessage(updated);
+              }
+              return updated;
+            });
+          });
+          
+          // Clear on error
+          if (phase === 'error') {
+            streamingMessageIdsRef.current.delete(`${runId}-${agent}`);
+            setIsTyping(false);
+          }
+          
+          // Turn off typing when any agent ends (will turn back on when next agent starts)
+          if (phase === 'end') {
+            setIsTyping(false);
           }
           return;
         }
@@ -262,32 +431,73 @@ export const useChat = (options: UseChatOptions = {}) => {
             }
           }
 
-          const messageId = (Date.now() + 1).toString();
-          const assistantMessage: ChatMessage = {
-            id: messageId,
-            role: 'assistant',
-            content: messageText || 'No response received',
-            timestamp: new Date(),
-            status: 'sent',
-            meta:
-              structuredDiagram || rawDiagram || iacPayload
-                ? {
-                    diagram: {
-                      structured: structuredDiagram,
-                      raw: rawDiagram ?? null,
-                      runId,
-                    },
-                    iac: iacPayload,
-                  }
-                : undefined,
-          };
+          const metaPayload =
+            structuredDiagram || rawDiagram || iacPayload
+              ? {
+                  diagram: {
+                    structured: structuredDiagram,
+                    raw: rawDiagram ?? null,
+                    runId,
+                  },
+                  iac: iacPayload,
+                }
+              : undefined;
+          
+          // Check if we have agent messages from streaming - if so, don't create a new message
+          const hasAgentMessages = runId && Array.from(streamingMessageIdsRef.current.keys()).some(key => 
+            key.startsWith(`${runId}-`)
+          );
+          
+          const existingStreamId = runId ? streamingMessageIdsRef.current.get(runId) : undefined;
+          const fallbackMessageId = (Date.now() + 1).toString();
+          const targetMessageId = existingStreamId ?? fallbackMessageId;
+          let finalAssistantMessage: ChatMessage | null = null;
+
           setMessages((prev) => {
             const patched = prev.map((msg) =>
               msg.id === lastUserMessageRef.current ? { ...msg, status: 'sent' as const } : msg
             );
+            
+            // If we have agent messages from streaming, don't create a duplicate team_final message
+            if (hasAgentMessages) {
+              // Just mark the user message as sent
+              return patched;
+            }
+            
+            if (existingStreamId) {
+              return patched.map((msg) => {
+                if (msg.id !== existingStreamId) {
+                  return msg;
+                }
+                // Preserve accumulated content from streaming; only update metadata
+                const updated: ChatMessage = {
+                  ...msg,
+                  content: msg.content || messageText,
+                  status: 'sent',
+                  timestamp: new Date(),
+                  meta: metaPayload ?? msg.meta,
+                };
+                finalAssistantMessage = updated;
+                return updated;
+              });
+            }
+            const assistantMessage: ChatMessage = {
+              id: fallbackMessageId,
+              role: 'assistant',
+              content: messageText || 'No response received',
+              timestamp: new Date(),
+              status: 'sent',
+              meta: metaPayload,
+            };
+            finalAssistantMessage = assistantMessage;
             return [...patched, assistantMessage];
           });
-          void persistMessage(assistantMessage);
+          if (runId) {
+            streamingMessageIdsRef.current.delete(runId);
+          }
+          if (finalAssistantMessage) {
+            void persistMessage(finalAssistantMessage);
+          }
           lastUserMessageRef.current = null;
           setIsTyping(false);
           if (runId) {
@@ -295,15 +505,11 @@ export const useChat = (options: UseChatOptions = {}) => {
               prev && prev.runId === runId ? { ...prev, status: 'completed', completedAt: new Date() } : prev
             );
           }
-          if (structuredDiagram) {
-            console.log('[useChat] Received structured diagram payload', {
-              services: structuredDiagram.services.length,
-              connections: structuredDiagram.connections.length,
-              groups: structuredDiagram.groups?.length ?? 0,
-            });
+          if (!structuredDiagram) {
+            console.warn('[team_final] ⚠️ No structured diagram in team_final', { hasRaw: !!rawDiagram, hasPayload: !!diagramPayload });
           }
           setLatestDiagram({
-            messageId,
+            messageId: targetMessageId,
             runId,
             architecture: structuredDiagram,
             raw: rawDiagram ?? null,
@@ -320,6 +526,7 @@ export const useChat = (options: UseChatOptions = {}) => {
             setRunState((prev) =>
               prev && prev.runId === runId ? { ...prev, status: 'completed', completedAt: new Date() } : prev
             );
+            streamingMessageIdsRef.current.delete(runId);
           }
           setIsTyping(false);
           return;
@@ -342,7 +549,7 @@ export const useChat = (options: UseChatOptions = {}) => {
         console.error('Failed to parse WebSocket message:', err);
       }
     },
-    [onError, persistMessage]
+    [onError, persistMessage, azureConversationId]
   );
 
   const connectWebSocket = useCallback(async () => {
@@ -355,7 +562,7 @@ export const useChat = (options: UseChatOptions = {}) => {
       return connectingRef.current;
     }
 
-    console.log(`Attempting to connect to WebSocket: ${wsUrl}`);
+    // Attempting to connect to WebSocket
     connectingRef.current = new Promise<void>((resolve, reject) => {
       try {
         const socket = new WebSocket(wsUrl);
@@ -364,7 +571,6 @@ export const useChat = (options: UseChatOptions = {}) => {
         socket.onopen = () => {
           setIsConnected(true);
           connectingRef.current = null;
-          console.log('✔ WebSocket connected successfully');
           resolve();
         };
 
@@ -387,11 +593,6 @@ export const useChat = (options: UseChatOptions = {}) => {
         socket.onclose = (event) => {
           setIsConnected(false);
           connectingRef.current = null;
-          console.log('ℹ WebSocket disconnected:', {
-            code: event.code,
-            reason: event.reason,
-            wasClean: event.wasClean,
-          });
         };
       } catch (error) {
         console.error('⚠ Failed to create WebSocket:', error);
@@ -412,6 +613,7 @@ export const useChat = (options: UseChatOptions = {}) => {
     connectingRef.current = null;
     setIsConnected(false);
     setRunState(null);
+    streamingMessageIdsRef.current.clear();
   }, []);
 
   const sendMessage = useCallback(
@@ -434,6 +636,13 @@ export const useChat = (options: UseChatOptions = {}) => {
       setIsTyping(true);
       lastUserMessageRef.current = userMessage.id;
 
+      const contextSummary = buildSummary([...messages, userMessage]);
+      const enrichedContext = {
+        ...contextSummary,
+        azure_conversation_id: azureConversationId ?? undefined,
+        integration_settings: integrationSettings ?? undefined,
+      };
+
       const useTeamPath = opts?.useTeam ?? teamMode;
       if (useTeamPath) {
         try {
@@ -442,7 +651,7 @@ export const useChat = (options: UseChatOptions = {}) => {
             type: 'team_stream_chat',
             message: trimmed,
             conversation_id: azureConversationId ?? undefined,
-            context: buildSummary([...messages, userMessage]),
+            context: enrichedContext,
           };
           wsRef.current?.send(JSON.stringify(payload));
           return;
@@ -451,18 +660,12 @@ export const useChat = (options: UseChatOptions = {}) => {
         }
       }
 
-      try {
-        console.log('[chat] Sending message via REST API');
+        try {
         const targetUrl = projectId ? `${apiUrl}?project_id=${encodeURIComponent(projectId)}` : apiUrl;
         const conversationHistory = [...messages, userMessage].map((msg) => ({
           role: msg.role,
           content: msg.content,
         }));
-        const contextPayload = {
-          ...buildSummary([...messages, userMessage]),
-          azure_conversation_id: azureConversationId ?? undefined,
-        };
-
         setRunState(null);
 
         const response = await fetch(targetUrl, {
@@ -474,7 +677,7 @@ export const useChat = (options: UseChatOptions = {}) => {
             message: trimmed,
             conversation_id: azureConversationId ?? undefined,
             conversation_history: conversationHistory,
-            context: contextPayload,
+            context: enrichedContext,
           }),
         });
 
@@ -485,7 +688,6 @@ export const useChat = (options: UseChatOptions = {}) => {
         }
 
         const data = await response.json();
-        console.log('[chat] Received response:', data);
 
         const resolvedConversationId =
           (typeof data.conversation_id === 'string' && data.conversation_id) || azureConversationId;
@@ -530,6 +732,7 @@ export const useChat = (options: UseChatOptions = {}) => {
       projectId,
       syncAzureConversationId,
       teamMode,
+      integrationSettings,
     ]
   );
 
@@ -537,6 +740,7 @@ export const useChat = (options: UseChatOptions = {}) => {
     setMessages([createGreetingMessage()]);
     setAzureConversationId(null);
     setLatestDiagram(null);
+    streamingMessageIdsRef.current.clear();
   }, [createGreetingMessage]);
 
   const addAssistantMessage = useCallback(
@@ -551,9 +755,15 @@ export const useChat = (options: UseChatOptions = {}) => {
         meta,
       };
       setMessages((prev) => [...prev, msg]);
-      void persistMessage(msg, azureConversationId);
+      // If this assistant message is from vision-only analysis, do NOT persist
+      // it to the backend conversation store. Persisting can trigger downstream
+      // automation (agent/team runs) based on DB events; avoid that for image
+      // uploads which should remain vision-only.
+      if (!meta || !meta.visionOnly) {
+        void persistMessage(msg, azureConversationId);
+      }
     },
-    [persistMessage]
+    [persistMessage, azureConversationId]
   );
 
   useEffect(() => {
@@ -566,16 +776,15 @@ export const useChat = (options: UseChatOptions = {}) => {
     let isCurrent = true;
     const loadConversation = async () => {
       try {
-        const [projectResult, conversationResult] = await Promise.all([
+        const [projectResult, conversationRows] = await Promise.all([
           getProjectById(supabase, projectId).catch((error) => {
             console.error('Failed to load project for chat', error);
             return null;
           }),
-          supabase
-            .from('conversations')
-            .select('*')
-            .eq('project_id', projectId)
-            .order('created_at', { ascending: true }),
+          getConversationHistory(supabase, projectId).catch((error) => {
+            console.error('Failed to load conversation history', error);
+            return [];
+          }),
         ]);
 
         if (!isCurrent) return;
@@ -584,24 +793,25 @@ export const useChat = (options: UseChatOptions = {}) => {
           setAzureConversationId(projectResult.azure_conversation_id);
         }
 
-        if (conversationResult.error) {
-          throw conversationResult.error;
-        }
-
-        const rows = (conversationResult.data ?? []) as {
+        const rows = conversationRows as Array<{
           id: string;
-          project_id: string;
           role: 'user' | 'assistant' | 'system';
           content: string;
           created_at: string;
-          azure_conversation_id: string | null;
-        }[];
+          run_id: string | null;
+          trace_events: Record<string, unknown>[] | null;
+          agent_name: string | null;
+        }>;
 
-        if (!projectResult?.azure_conversation_id) {
-          const rowConversationId = rows.find((row) => row.azure_conversation_id)?.azure_conversation_id ?? null;
-          if (rowConversationId) {
-            setAzureConversationId(rowConversationId);
+        // Load trace events into state (grouped by runId)
+        const tracesByRun: Record<string, TraceEventRecord[]> = {};
+        for (const row of rows) {
+          if (row.run_id && row.trace_events && Array.isArray(row.trace_events)) {
+            tracesByRun[row.run_id] = row.trace_events as unknown as TraceEventRecord[];
           }
+        }
+        if (Object.keys(tracesByRun).length > 0) {
+          setTraceEventsByRunId(tracesByRun);
         }
 
         if (rows.length === 0) {
@@ -609,13 +819,28 @@ export const useChat = (options: UseChatOptions = {}) => {
           return;
         }
 
-        const restored = rows.map((row) => ({
-          id: row.id ?? crypto.randomUUID(),
-          role: row.role,
-          content: row.content ?? '',
-          timestamp: row.created_at ? new Date(row.created_at) : new Date(),
-          status: 'sent' as const,
-        }));
+        // Restore messages with agentName from database
+        const restored = rows.map((row) => {
+          const base: ChatMessage = {
+            id: row.id ?? crypto.randomUUID(),
+            role: row.role,
+            content: row.content ?? '',
+            timestamp: row.created_at ? new Date(row.created_at) : new Date(),
+            status: 'sent' as const,
+            meta: row.run_id
+              ? {
+                  diagram: {
+                    structured: null,
+                    raw: null,
+                    runId: row.run_id,
+                  },
+                  agentName: row.agent_name ?? undefined,
+                }
+              : undefined,
+          };
+
+          return base;
+        });
 
         setMessages(restored);
       } catch (error) {
@@ -651,5 +876,6 @@ export const useChat = (options: UseChatOptions = {}) => {
     addAssistantMessage,
     runState,
     latestDiagram,
+    traceEventsByRunId,
   };
 };

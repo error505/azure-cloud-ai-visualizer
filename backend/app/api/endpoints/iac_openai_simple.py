@@ -39,7 +39,7 @@ class IaCResponse(BaseModel):
 @router.post("/generate", response_model=IaCResponse)
 async def generate_iac_simple(req: IaCGenerateRequest) -> IaCResponse:
     api_key = os.getenv("OPENAI_API_KEY")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-5-nano-2025-08-07")
     
     if not api_key or not OpenAI:
         raise HTTPException(status_code=500, detail="OpenAI API key not configured or OpenAI package not available")

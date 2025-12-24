@@ -257,3 +257,56 @@ async def get_microsoft_docs_mcp_tool():
             _microsoft_docs_backoff_until = time.time() + 300
 
     return _microsoft_docs_mcp_tool
+
+
+def get_agent_client():
+    """Get the appropriate agent client for dual-pass validation and other AI agents.
+    
+    Priority:
+    1. Local models (Ollama/AI Foundry) if USE_OLLAMA or USE_FOUNDRY_LOCAL is set
+    2. OpenAI if USE_OPENAI_FALLBACK or OPENAI_API_KEY is set
+    3. Azure AI if Azure credentials are configured
+    
+    Returns a client that supports create_agent() method.
+    """
+    from app.core.config import settings
+    
+    # Check for local model configuration first
+    from app.agents.clients.local_model_client import get_local_model_client
+    local_client = get_local_model_client()
+    if local_client:
+        logger.info(f"Using local model client for validation: {local_client.backend}")
+        return local_client
+    
+    # Check for OpenAI fallback
+    if settings.USE_OPENAI_FALLBACK or bool(settings.OPENAI_API_KEY):
+        try:
+            from agent_framework.openai import OpenAIChatClient
+            client = OpenAIChatClient(
+                model_id=settings.OPENAI_MODEL,
+                api_key=settings.OPENAI_API_KEY,
+            )
+            logger.info(f"Using OpenAI client for validation: {settings.OPENAI_MODEL}")
+            return client
+        except Exception as e:
+            logger.error(f"Failed to create OpenAI client: {e}")
+    
+    # Fall back to Azure AI
+    try:
+        from azure.identity.aio import DefaultAzureCredential
+        from agent_framework.azure import AzureAIAgentClient
+        
+        credential = DefaultAzureCredential()
+        client = AzureAIAgentClient(
+            project_endpoint=settings.AZURE_AI_PROJECT_ENDPOINT,
+            model_deployment_name=settings.AZURE_AI_MODEL_DEPLOYMENT_NAME,
+            credential=credential
+        )
+        logger.info(f"Using Azure AI client for validation: {settings.AZURE_AI_MODEL_DEPLOYMENT_NAME}")
+        return client
+    except Exception as e:
+        logger.error(f"Failed to create Azure AI client: {e}")
+        raise RuntimeError(
+            "No valid agent client available. Configure one of: "
+            "OPENAI_API_KEY, USE_OLLAMA, or Azure AI credentials"
+        )

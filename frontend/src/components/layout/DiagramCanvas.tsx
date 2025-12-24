@@ -9,6 +9,7 @@ import {
   MarkerType,
   Node as RFNode,
   Edge as RFEdge,
+  type Connection,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useDiagramStore } from '@/store/diagramStore';
@@ -17,6 +18,7 @@ import AzureGroupNode from '@/components/nodes/AzureGroupNode';
 import AnimatedEdge from '@/components/edges/AnimatedEdge';
 import ParticleEdge from '@/components/edges/ParticleEdge';
 import EdgeLabelModal from '@/components/layout/EdgeLabelModal';
+import { CanvasLoadingOverlay } from '@/components/layout/CanvasLoadingOverlay';
 import { Button } from '@/components/ui/button';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { toast } from 'sonner';
@@ -41,15 +43,12 @@ const DiagramCanvas = () => {
     onConnect,
     addNode,
     setSelectedNode,
-    editingEdgeId,
-    setEditingEdgeId,
+    isGenerating,
   } = useDiagramStore();
   const removeEdge = useDiagramStore((s) => s.removeEdge);
   const updateEdgeLabel = useDiagramStore((s) => s.updateEdgeLabel);
-  const bringNodeToFront = useDiagramStore((s) => s.bringNodeToFront);
-  const sendNodeToBack = useDiagramStore((s) => s.sendNodeToBack);
-  const bringNodeForward = useDiagramStore((s) => s.bringNodeForward);
-  const sendNodeBackward = useDiagramStore((s) => s.sendNodeBackward);
+
+  const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -136,38 +135,38 @@ const DiagramCanvas = () => {
         toast.info(`Deleted ${selectedNodes.length} node(s) and ${selectedEdges.length} edge(s)`);
       }
     },
-    onBringToFront: () => {
-      const selectedNodes = nodes.filter((n) => n.selected);
-      if (selectedNodes.length === 1) {
-        bringNodeToFront(selectedNodes[0].id);
-        toast.success('Brought to front');
-      }
-    },
-    onSendToBack: () => {
-      const selectedNodes = nodes.filter((n) => n.selected);
-      if (selectedNodes.length === 1) {
-        sendNodeToBack(selectedNodes[0].id);
-        toast.success('Sent to back');
-      }
-    },
-    onBringForward: () => {
-      const selectedNodes = nodes.filter((n) => n.selected);
-      if (selectedNodes.length === 1) {
-        bringNodeForward(selectedNodes[0].id);
-        toast.success('Brought forward');
-      }
-    },
-    onSendBackward: () => {
-      const selectedNodes = nodes.filter((n) => n.selected);
-      if (selectedNodes.length === 1) {
-        sendNodeBackward(selectedNodes[0].id);
-        toast.success('Sent backward');
-      }
-    },
   });
 
   return (
     <div ref={reactFlowWrapper} className="flex-1 relative bg-background">
+      <style>{`
+        /* Improve visibility of ReactFlow controls in dark mode */
+        .react-flow__controls {
+          background: rgba(255,255,255,0.02) !important;
+          border: 1px solid rgba(255,255,255,0.04) !important;
+          box-shadow: 0 6px 18px rgba(2,6,23,0.6) !important;
+          backdrop-filter: blur(6px);
+          border-radius: 8px;
+        }
+        .react-flow__controls button {
+          background: transparent !important;
+          color: var(--muted-foreground) !important;
+          border-radius: 6px !important;
+          padding: 6px !important;
+        }
+        .react-flow__controls button svg {
+          color: var(--muted-foreground) !important;
+          fill: currentColor !important;
+        }
+        .react-flow__controls button:hover {
+          background: rgba(255,255,255,0.02) !important;
+        }
+        .react-flow__minimap {
+          background: rgba(255,255,255,0.02) !important;
+          border: 1px solid rgba(255,255,255,0.04) !important;
+        }
+      `}</style>
+      <CanvasLoadingOverlay isLoading={isGenerating} />
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -183,6 +182,11 @@ const DiagramCanvas = () => {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
+        // Allow deeper zooming out for very large diagrams and give fitView more room
+        minZoom={0.04}
+        maxZoom={2.5}
+        defaultViewport={{ x: 0, y: 0, zoom: 0.35 }}
+        fitViewOptions={{ padding: 0.06, includeHiddenNodes: true }}
         snapToGrid
         snapGrid={[15, 15]}
         deleteKeyCode={['Delete', 'Backspace']}
@@ -195,9 +199,8 @@ const DiagramCanvas = () => {
             height: 20,
             color: 'hsl(var(--primary))',
           },
+          updatable: { source: true, target: true },
         }}
-        edgesReconnectable={true}
-        elevateEdgesOnSelect={true}
       >
         <Background 
           variant={BackgroundVariant.Dots} 

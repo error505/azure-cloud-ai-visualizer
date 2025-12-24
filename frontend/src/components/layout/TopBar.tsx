@@ -1,20 +1,12 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ExportModal } from '@/components/modals/ExportModal';
 import ThemeToggle from '@/components/ui/theme-toggle';
 import { useSupabase } from '@/context/SupabaseContext';
 
 interface TopBarProps {
   titleOverride?: string;
-  onChatToggle?: () => void;
-  isChatOpen?: boolean;
-  onAssetsToggle?: () => void;
-  isAssetsOpen?: boolean;
-  onIacToggle?: () => void;
-  isIacOpen?: boolean;
-  onSave?: () => void;
   projectId?: string;
   onRename?: (newTitle: string) => void;
   onDelete?: () => void;
@@ -22,19 +14,10 @@ interface TopBarProps {
 
 const TopBar = ({
   titleOverride,
-  onChatToggle,
-  isChatOpen,
-  onAssetsToggle,
-  isAssetsOpen,
-  onIacToggle,
-  isIacOpen,
-  onSave,
   projectId,
   onRename,
   onDelete,
 }: TopBarProps) => {
-  const [exportModalOpen, setExportModalOpen] = useState(false);
-  const canvasRef = useRef<HTMLElement | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [localTitle, setLocalTitle] = useState<string>(titleOverride ?? 'Azure Architect');
   const { user, signOut, signInWithProvider, isReady, supabaseAvailable } = useSupabase();
@@ -42,14 +25,6 @@ const TopBar = ({
   useEffect(() => {
     setLocalTitle(titleOverride ?? 'Azure Architect');
   }, [titleOverride]);
-
-  // Get canvas element reference
-  const getCanvasElement = () => {
-    if (!canvasRef.current) {
-      canvasRef.current = document.querySelector('.react-flow');
-    }
-    return canvasRef.current;
-  };
 
   return (
     <header className="glass-panel border-b border-border/50 px-4 h-14 flex items-center justify-between">
@@ -99,80 +74,24 @@ const TopBar = ({
           </div>
         </div>
         
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" className="gap-2">
-            <Icon icon="mdi:folder-open" />
-            <span className="hidden md:inline">Open</span>
-          </Button>
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            className="gap-2"
-            onClick={onSave}
-            disabled={!projectId || !onSave}
-            title={projectId ? "Save diagram" : "Sign in to save projects"}
-          >
-            <Icon icon="mdi:content-save" />
-            <span className="hidden md:inline">Save</span>
-          </Button>
+        {projectId && onDelete && (
           <Button
             variant="ghost"
             size="sm"
             className="gap-2 text-red-400"
             onClick={() => {
-              if (!projectId) return;
-              if (!onDelete) return;
               const ok = window.confirm('Delete project and all associated data? This cannot be undone.');
               if (ok) onDelete();
             }}
-            disabled={!projectId || !onDelete}
-            title={projectId ? 'Delete project' : 'Sign in to manage projects'}
+            title="Delete project"
           >
             <Icon icon="mdi:delete" />
             <span className="hidden md:inline">Delete</span>
           </Button>
-        </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2">
-        <Button 
-          variant={isIacOpen ? "default" : "outline"} 
-          size="sm" 
-          className="gap-2"
-          onClick={onIacToggle}
-        >
-          <Icon icon="mdi:code-json" />
-          {isIacOpen ? 'IaC Panel' : 'Generate IaC'}
-        </Button>
-        <Button variant="default" size="sm" className="gap-2 bg-accent hover:bg-accent/90">
-          <Icon icon="mdi:cloud-upload" />
-          Deploy
-        </Button>
-        <Button 
-          variant="ghost" 
-          size="sm" 
-          className="gap-2"
-          onClick={() => setExportModalOpen(true)}
-        >
-          <Icon icon="mdi:download" />
-          Export
-        </Button>
-        <Button 
-          variant={isAssetsOpen ? "default" : "ghost"} 
-          size="icon"
-          onClick={onAssetsToggle}
-          title="Asset Manager"
-        >
-          <Icon icon="mdi:folder-multiple-image" className="text-xl" />
-        </Button>
-        <Button 
-          variant={isChatOpen ? "default" : "ghost"} 
-          size="icon"
-          onClick={onChatToggle}
-          title="AI Assistant"
-        >
-          <Icon icon="mdi:robot" className="text-xl" />
-        </Button>
         <ThemeToggle />
         {isReady && user ? (
           <Button variant="ghost" size="sm" className="gap-2" onClick={() => signOut()}>
@@ -190,17 +109,11 @@ const TopBar = ({
             <span className="hidden md:inline">Sign in</span>
           </Button>
         ) : (
-          <Badge variant="secondary" className="bg-muted text-muted-foreground border border-border">
+          <Badge variant="secondary" className="bg-white/10 text-white/70">
             Supabase disabled
           </Badge>
         )}
       </div>
-
-      <ExportModal 
-        open={exportModalOpen}
-        onOpenChange={setExportModalOpen}
-        canvasElement={getCanvasElement()}
-      />
     </header>
   );
 };

@@ -1,6 +1,5 @@
 """Simple mock endpoints for testing."""
 
-import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List
@@ -8,6 +7,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,8 +37,15 @@ class ProjectResponse(BaseModel):
     name: str
     description: str
     diagram_data: Dict[str, Any]
+    share_token: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ShareLinkResponse(BaseModel):
+    """Shareable link response model."""
+    share_token: str
+    share_url: str
 
 
 @router.post("/", response_model=ProjectResponse)
@@ -52,6 +60,7 @@ async def create_project(project: ProjectCreate) -> ProjectResponse:
             "name": project.name,
             "description": project.description,
             "diagram_data": project.diagram_data,
+            "share_token": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -105,6 +114,52 @@ async def delete_project(project_id: str) -> Dict[str, str]:
     del projects_storage[project_id]
     logger.info(f"Deleted project {project_id}")
     return {"message": "Project deleted successfully"}
+
+
+def _build_share_url(project_id: str, share_token: str) -> str:
+    """Build a shareable workspace URL using configured frontend base."""
+    base = settings.FRONTEND_BASE_URL.rstrip("/") if settings.FRONTEND_BASE_URL else "http://localhost:8080/app"
+    url = f"{base}/{project_id}"
+    if share_token:
+        url = f"{url}?share_token={share_token}"
+    return url
+
+
+@router.post("/{project_id}/share", response_model=ShareLinkResponse)
+async def create_share_link(project_id: str) -> ShareLinkResponse:
+    """Create or rotate a shareable link for a project."""
+    if project_id not in projects_storage:
+        # If the project was created elsewhere (e.g., Supabase), provision a placeholder
+        now = datetime.utcnow()
+        projects_storage[project_id] = {
+            "id": project_id,
+            "name": f"Project {project_id[:8]}",
+            "description": "",
+            "diagram_data": {},
+            "share_token": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    share_token = uuid4().hex
+    project_data = projects_storage[project_id]
+    project_data["share_token"] = share_token
+    project_data["updated_at"] = datetime.utcnow()
+    projects_storage[project_id] = project_data
+
+    return ShareLinkResponse(
+        share_token=share_token,
+        share_url=_build_share_url(project_id, share_token),
+    )
+
+
+@router.get("/share/{share_token}", response_model=ProjectResponse)
+async def get_project_by_share_token(share_token: str) -> ProjectResponse:
+    """Resolve a project by its share token (view-only collaboration entry point)."""
+    for project in projects_storage.values():
+        if project.get("share_token") == share_token:
+            return ProjectResponse(**project)
+    raise HTTPException(status_code=404, detail="Share link not found")
 
 
 @router.get("/", response_model=List[ProjectResponse])

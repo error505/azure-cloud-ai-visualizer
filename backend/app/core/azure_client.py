@@ -8,7 +8,7 @@ from azure.storage.blob.aio import BlobServiceClient
 from azure.ai.projects.aio import AIProjectClient
 from agent_framework.azure import AzureAIAgentClient
 from openai import AsyncOpenAI
-from agent_framework.openai import OpenAIAssistantsClient, OpenAIResponsesClient
+from agent_framework.openai import OpenAIAssistantsClient, OpenAIChatClient
 
 from app.core.config import settings
 
@@ -25,15 +25,25 @@ class AzureClientManager:
         self.agent_client: Optional[AzureAIAgentClient] = None
         self.openai_client: Optional[AsyncOpenAI] = None
         self.openai_assistants_client: Optional[OpenAIAssistantsClient] = None
-        self.openai_responses_client: Optional[OpenAIResponsesClient] = None
+        self.openai_chat_client: Optional[OpenAIChatClient] = None
         self._azure_architect_agent = None  # Will be AzureArchitectAgent instance
         
     async def initialize(self) -> None:
         """Initialize all Azure clients and OpenAI clients if configured."""
         logger.info("Initializing clients...")
         
+        # Check for local model configuration first (highest priority)
+        from app.agents.clients.local_model_client import get_local_model_client
+        local_client = get_local_model_client()
+        
+        if local_client:
+            # Use local models (Ollama or Foundry Local)
+            logger.info(f"Using local model backend: {local_client.backend}")
+            from app.agents.azure_architect_agent import AzureArchitectAgent
+            self._azure_architect_agent = AzureArchitectAgent(agent_client=local_client)
+            logger.info(f"Local model client initialized: {local_client.backend} with model {local_client.model}")
         # Prefer explicit OpenAI fallback when configured via flag or API key.
-        if settings.USE_OPENAI_FALLBACK or bool(settings.OPENAI_API_KEY):
+        elif settings.USE_OPENAI_FALLBACK or bool(settings.OPENAI_API_KEY):
             # Initialize OpenAI clients
             self.openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             # Some wrappers require a model id at construction time; pass the
@@ -42,15 +52,15 @@ class AzureClientManager:
                 openai_client=self.openai_client,
                 model_id=settings.OPENAI_MODEL,
             )
-            self.openai_responses_client = OpenAIResponsesClient(
-                openai_client=self.openai_client,
+            self.openai_chat_client = OpenAIChatClient(
                 model_id=settings.OPENAI_MODEL,
+                api_key=settings.OPENAI_API_KEY,
             )
             
             # Initialize Azure Architect Agent with OpenAI client
             from app.agents.azure_architect_agent import AzureArchitectAgent
             self._azure_architect_agent = AzureArchitectAgent(
-                agent_client=self.openai_responses_client  # Use responses client for vision capabilities
+                agent_client=self.openai_chat_client  # Use chat client for true token streaming
             )
             logger.info("OpenAI clients initialized successfully (fallback)")
         else:
@@ -151,9 +161,9 @@ class AzureClientManager:
         """Get the OpenAI Assistants client."""
         return self.openai_assistants_client
     
-    def get_openai_responses_client(self) -> Optional[OpenAIResponsesClient]:
-        """Get the OpenAI Responses client."""
-        return self.openai_responses_client
+    def get_openai_chat_client(self) -> Optional[OpenAIChatClient]:
+        """Get the OpenAI Chat client."""
+        return self.openai_chat_client
     
     def get_azure_architect_agent(self):
         """Get the Azure Architect Agent."""

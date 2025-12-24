@@ -2,17 +2,62 @@
 
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime
 import asyncio
 import contextlib
-from app.obs.tracing import tracer, TraceEvent
+from app.obs.tracing import tracer
 from app.agents.landing_zone_team import LandingZoneTeam
 from fastapi import WebSocket, WebSocketDisconnect
 from app.core.azure_client import AzureClientManager
 from app.agents.tools.analyze_diagram import analyze_diagram
+from app.utils.integration_settings import normalize_integration_settings
 
 logger = logging.getLogger(__name__)
+
+RAG_KEYWORDS = (
+    "rag",
+    "retrieval augmented",
+    "vector search",
+    "vector database",
+    "semantic search",
+    "vector index",
+    "knowledge retrieval",
+    "grounded ai",
+    "grounded intelligence",
+    "document qa",
+)
+
+RAG_IMPLEMENTATION_GUIDANCE = (
+    "### Retrieval-Augmented Generation (RAG) reference blueprint\n"
+    "- Model three lanes: ingestion/indexing, orchestration/runtime, and monitoring/security. Do NOT collapse them into a single box.\n"
+    "- Ingestion + indexing: ingest banking documents into Azure Blob Storage or Data Lake (storage/10089-icon-service-Storage-Accounts), orchestrate pipelines with Azure Data Factory/Synapse, and run chunking/ETL via Azure Functions (compute/10029-icon-service-Function-Apps) or Azure Container Apps. Show these resources and their connections explicitly.\n"
+    "- Embeddings/vector store: call Azure OpenAI (ai + machine learning/03438-icon-service-Azure-OpenAI) or Azure AI Studio to generate embeddings and persist vectors inside Azure AI Search / Cognitive Search (ai + machine learning/10044-icon-service-Cognitive-Search) configured for semantic + vector indexes. Include the index resource and its diagnostic settings.\n"
+    "- Runtime/API tier: expose the RAG assistant via Azure App Service (app services/10035-icon-service-App-Services) or Functions plus Azure API Management (integration/10036-icon-service-API-Management) / Front Door. This tier must orchestrate: user prompt -> Azure AI Search vector query -> Azure OpenAI chat/completions -> response. Draw edges capturing this flow.\n"
+    "- State/cache/data: include repositories for metadata or chats such as Azure SQL, Cosmos DB, or Azure Cache for Redis (databases/10137-icon-service-Cache-Redis) plus storage for reference docs. Keep Key Vault, private endpoints, Log Analytics, Defender for Cloud, and policy initiatives to satisfy fintech governance.\n"
+    "- Diagram JSON MUST list these services with the official icon ids noted above, plus vnets/subnets, Key Vault, monitoring, and security guardrails. Connections should show ingestion -> embeddings -> vector index -> LLM -> app/API/channel."
+)
+
+STREAMING_AGENTS = {
+    "Architect",
+    "SecurityReviewer",
+    "IdentityGovernanceReviewer",
+    "NamingEnforcer",
+    "ReliabilityReviewer",
+    "CostPerfOptimizer",
+    "ComplianceReviewer",
+    "NetworkingReviewer",
+    "ObservabilityReviewer",
+    "DataStorageReviewer",
+    "FinalEditor",
+}
+
+
+def _needs_rag_guidance(message: str | None) -> bool:
+    if not message:
+        return False
+    text = message.lower()
+    return any(keyword in text for keyword in RAG_KEYWORDS)
 
 
 class ConnectionManager:
@@ -38,13 +83,21 @@ class ConnectionManager:
         """Send a message to a specific client."""
         if client_id in self.active_connections:
             websocket = self.active_connections[client_id]
-            await websocket.send_text(message)
+            try:
+                await websocket.send_text(message)
+            except Exception as e:
+                logger.warning(f"Failed to send to {client_id}: {e}")
+                self.disconnect(client_id)
     
     async def send_json_message(self, data: dict, client_id: str):
         """Send JSON data to a specific client."""
         if client_id in self.active_connections:
             websocket = self.active_connections[client_id]
-            await websocket.send_json(data)
+            try:
+                await websocket.send_json(data)
+            except Exception as e:
+                logger.warning(f"Failed to send to {client_id}: {e}")
+                self.disconnect(client_id)
     
     def add_to_conversation(self, conversation_id: str, client_id: str):
         """Add client to conversation for broadcasting."""
@@ -71,31 +124,92 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # NEW: bridge TraceEvent -> WebSocket messages
+async def _dispatch_trace_event(payload: Dict[str, Any], client_id: str, conversation_id: str | None):
+    msg = {
+        "type": "trace_event",
+        "run_id": payload["run_id"],
+        "step_id": payload["step_id"],
+        "agent": payload["agent"],
+        "phase": payload["phase"],
+        "ts": payload["ts"],
+        "meta": payload.get("meta", {}),
+        "progress": payload.get("progress", {}),
+        "telemetry": payload.get("telemetry", {}),
+        "message_delta": payload.get("message_delta"),
+        "summary": payload.get("summary"),
+        "error": payload.get("error"),
+        "conversation_id": conversation_id,
+    }
+    await manager.send_json_message(msg, client_id)
+    if conversation_id:
+        await manager.broadcast_to_conversation(conversation_id, msg)
+
+
+async def _forward_agent_stream(payload: Dict[str, Any], client_id: str, conversation_id: str | None):
+    agent = payload.get("agent")
+    print(f"[STREAM-FORWARD] Agent: {agent}, Is in STREAMING_AGENTS: {agent in STREAMING_AGENTS}")
+    if agent not in STREAMING_AGENTS:
+        return
+    phase = payload.get("phase")
+    delta = payload.get("message_delta")
+    print(f"[STREAM-FORWARD] Phase: {phase}, Delta length: {len(delta) if delta else 0}, Delta preview: {repr(delta[:50]) if delta else 'None'}")
+    if not delta and phase not in ("end", "error"):
+        print(f"[STREAM-FORWARD] Skipping - no delta and phase not end/error")
+        return
+    stream_msg = {
+        "type": "agent_stream",
+        "run_id": payload.get("run_id"),
+        "step_id": payload.get("step_id"),
+        "agent": agent,
+        "phase": phase,
+        "ts": payload.get("ts"),
+        "message_delta": delta,
+        "conversation_id": conversation_id,
+    }
+    print(f"[STREAM-FORWARD] Sending agent_stream message to client {client_id}")
+    await manager.send_json_message(stream_msg, client_id)
+    if conversation_id:
+        await manager.broadcast_to_conversation(conversation_id, stream_msg)
+    print(f"[STREAM-FORWARD] ✓ Sent successfully")
+
+
+async def _replay_trace_log(run_id: str, client_id: str, conversation_id: str | None) -> bool:
+    """Send any persisted trace backlog to the subscriber before streaming live updates."""
+    replayed = False
+    history: List[Dict[str, Any]] = await tracer.read_persisted(run_id)
+    for payload in history:
+        replayed = True
+        await _dispatch_trace_event(payload, client_id, conversation_id)
+        await _forward_agent_stream(payload, client_id, conversation_id)
+    return replayed
+
+
 async def _forward_trace_events(run_id: str, client_id: str, conversation_id: str | None):
+    print(f"\n[TRACE-FORWARDER] Starting for run_id={run_id}, client_id={client_id}")
     try:
-        async for raw in tracer.stream(run_id):
-            payload = json.loads(raw)
-            msg = {
-                "type": "trace_event",
-                "run_id": payload["run_id"],
-                "step_id": payload["step_id"],
-                "agent": payload["agent"],
-                "phase": payload["phase"],
-                "ts": payload["ts"],
-                "meta": payload.get("meta", {}),
-                "progress": payload.get("progress", {}),
-                "telemetry": payload.get("telemetry", {}),
-                "message_delta": payload.get("message_delta"),
-                "summary": payload.get("summary"),
-                "error": payload.get("error"),
-                "conversation_id": conversation_id,
-            }
-            # Send to the caller
-            await manager.send_json_message(msg, client_id)
-            # Optionally also broadcast to others in the same conversation
-            if conversation_id:
-                await manager.broadcast_to_conversation(conversation_id, msg)
+        queue = tracer.attach(run_id)
+        print(f"[TRACE-FORWARDER] ✓ Attached to tracer queue")
+        try:
+            await _replay_trace_log(run_id, client_id, conversation_id)
+            print(f"[TRACE-FORWARDER] ✓ Replay complete, starting live forwarding...")
+            event_count = 0
+            while True:
+                raw = await queue.get()
+                if raw is None:
+                    print(f"[TRACE-FORWARDER] Received termination signal (None)")
+                    break
+                event_count += 1
+                print(f"[TRACE-FORWARDER] Event {event_count}: {raw[:200]}")
+                payload = json.loads(raw)
+                print(f"[TRACE-FORWARDER] Event {event_count} parsed - agent: {payload.get('agent')}, phase: {payload.get('phase')}")
+                await _dispatch_trace_event(payload, client_id, conversation_id)
+                await _forward_agent_stream(payload, client_id, conversation_id)
+            print(f"[TRACE-FORWARDER] ✓ Forwarding complete - {event_count} events processed")
+        finally:
+            tracer.detach(run_id, queue)
+            print(f"[TRACE-FORWARDER] ✓ Detached from tracer")
     except asyncio.CancelledError:
+        print(f"[TRACE-FORWARDER] Task cancelled")
         # Task cancelled when run completes; swallow cancellation so loop exits quietly
         pass
 
@@ -108,7 +222,7 @@ async def handle_team_stream_chat(data: dict, client_id: str, azure_clients: Azu
         "type": "team_stream_chat",
         "message": "Design a secure Azure landing zone for a fintech startup",
         "conversation_id": "...",
-        "parallel": false   # optional: if true, uses fan-out/fan-in pass
+        "parallel": true    # optional: if true, uses fan-out/fan-in pass
       }
     """
     run_id: str | None = None
@@ -116,8 +230,12 @@ async def handle_team_stream_chat(data: dict, client_id: str, azure_clients: Azu
     try:
         user_prompt = data.get("message", "")
         conversation_id = data.get("conversation_id")
-        use_parallel = bool(data.get("parallel", False))
+        use_parallel = bool(data.get("parallel", True))
         context_payload = data.get("context") if isinstance(data.get("context"), dict) else None
+        integration_payload = None
+        if context_payload and isinstance(context_payload.get("integration_settings"), dict):
+            integration_payload = context_payload.get("integration_settings")
+        integration_preferences = normalize_integration_settings(integration_payload)
 
         context_prefix = ""
         if context_payload:
@@ -137,9 +255,17 @@ async def handle_team_stream_chat(data: dict, client_id: str, azure_clients: Azu
                 if formatted_recent:
                     context_prefix += "Recent exchanges:\n" + "\n".join(formatted_recent) + "\n\n"
 
-        composed_prompt = user_prompt.strip()
+        rag_guidance = RAG_IMPLEMENTATION_GUIDANCE if _needs_rag_guidance(user_prompt) else ""
+
+        composed_segments: List[str] = []
         if context_prefix:
-            composed_prompt = f"{context_prefix}Current user request:\n{composed_prompt}".strip()
+            composed_segments.append(context_prefix.rstrip())
+            composed_segments.append(f"Current user request:\n{user_prompt.strip()}")
+        else:
+            composed_segments.append(user_prompt.strip())
+        if rag_guidance:
+            composed_segments.append(rag_guidance)
+        composed_prompt = "\n\n".join(segment for segment in composed_segments if segment).strip()
 
         if not user_prompt:
             await manager.send_json_message({
@@ -148,10 +274,16 @@ async def handle_team_stream_chat(data: dict, client_id: str, azure_clients: Azu
             }, client_id)
             return
 
-        # Build the team (we reuse the same underlying client you already use)
-        # Use the same agent_client you pass to AzureArchitectAgent internally:
+        # Build the team (reuse the AzureArchitectAgent + streaming responses client)
         architect_agent = azure_clients.get_azure_architect_agent()
-        team = LandingZoneTeam(architect_agent.agent_client)
+        try:
+            architect_agent.set_integration_preferences(integration_preferences)
+        except AttributeError:
+            logger.debug("Architect agent does not expose integration preferences setter.")
+        
+        # Extract agent configuration from integration preferences
+        agent_config = integration_preferences.get("agents", {})
+        team = LandingZoneTeam(architect_agent, agent_config=agent_config)
 
         # Generate a run id up front so we can stream progress immediately
         run_id = tracer.new_run()
@@ -242,8 +374,16 @@ async def handle_subscribe_run(data: dict, client_id: str):
     if not run_id:
         await manager.send_json_message({"type": "error", "message": "run_id is required"}, client_id)
         return
-    asyncio.create_task(_forward_trace_events(run_id, client_id, conversation_id))
-    await manager.send_json_message({"type": "subscribed_run", "run_id": run_id}, client_id)
+    if tracer.is_active(run_id):
+        asyncio.create_task(_forward_trace_events(run_id, client_id, conversation_id))
+        await manager.send_json_message({"type": "subscribed_run", "run_id": run_id, "mode": "live"}, client_id)
+    else:
+        await manager.send_json_message({"type": "subscribed_run", "run_id": run_id, "mode": "replay"}, client_id)
+        replayed = await _replay_trace_log(run_id, client_id, conversation_id)
+        if replayed:
+            await manager.send_json_message({"type": "run_completed", "run_id": run_id, "replayed": True}, client_id)
+        else:
+            await manager.send_json_message({"type": "trace_event_backlog_empty", "run_id": run_id}, client_id)
 
 
 async def handle_chat_websocket(websocket: WebSocket, client_id: str, azure_clients: AzureClientManager):
@@ -310,6 +450,11 @@ async def handle_chat_message(data: dict, client_id: str, azure_clients: AzureCl
         
         context_dict = context_payload if isinstance(context_payload, dict) else None
         history_list = history_payload if isinstance(history_payload, list) else None
+        integration_settings = normalize_integration_settings(
+            context_dict.get("integration_settings") if isinstance(context_dict, dict) else None
+        )
+        if hasattr(agent, "set_integration_preferences"):
+            agent.set_integration_preferences(integration_settings)
 
         # Get response from agent
         response = await agent.chat(
@@ -370,6 +515,11 @@ async def handle_stream_chat(data: dict, client_id: str, azure_clients: AzureCli
         
         context_dict = context_payload if isinstance(context_payload, dict) else None
         history_list = history_payload if isinstance(history_payload, list) else None
+        integration_settings = normalize_integration_settings(
+            context_dict.get("integration_settings") if isinstance(context_dict, dict) else None
+        )
+        if hasattr(agent, "set_integration_preferences"):
+            agent.set_integration_preferences(integration_settings)
 
         # Stream response from agent
         full_response = ""

@@ -1,6 +1,8 @@
 // src/components/RunProgress.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Icon } from "@iconify/react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import TypewriterMarkdown from "@/components/ui/TypewriterMarkdown";
 
 type TracePhase = "start" | "delta" | "end" | "error";
 
@@ -141,9 +143,10 @@ export default function RunProgress({ runId }: { runId: string }) {
           />
         </div>
       </div>
-      <div className="relative pl-4">
-        <div className="absolute left-1 top-2 bottom-2 w-px bg-border/60" aria-hidden />
-        {stepOrder.map((id) => {
+      <ScrollArea className="relative max-h-[28rem] pr-3">
+        <div className="relative pl-4">
+          <div className="absolute left-1 top-2 bottom-2 w-px bg-border/60" aria-hidden />
+          {stepOrder.map((id) => {
           const state = steps[id];
           if (!state) {
             return null;
@@ -186,38 +189,43 @@ export default function RunProgress({ runId }: { runId: string }) {
                     <summary className="cursor-pointer select-none text-xs uppercase tracking-wide text-muted-foreground/80 group-open:text-foreground/80">
                       View agent output
                     </summary>
-                    <pre className="mt-2 whitespace-pre-wrap rounded-md bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
-                      {combinedText}
-                    </pre>
+                    <ScrollArea className="mt-2 max-h-48 rounded-md bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+                      <TypewriterMarkdown text={combinedText} speed={6} />
+                    </ScrollArea>
                   </details>
                 )}
 
                 {eventsForStep.length > 0 && (
-                  <div className="mt-3 space-y-1 text-xs text-muted-foreground/90">
-                    {eventsForStep.map((event, idx) => (
-                      <div key={`${event.step_id}-${idx}`} className="flex items-start gap-2">
-                        <span className="mt-[2px] h-1.5 w-1.5 rounded-full bg-primary/40 flex-shrink-0" />
-                        <div className="flex-1 leading-relaxed">
-                          <span className="font-medium text-foreground/80">{event.phase}</span>
-                          {event.summary ? ` — ${event.summary}` : ""}
-                          {event.message_delta && (
-                            <span className="block text-muted-foreground whitespace-pre-wrap">
-                              {event.message_delta.trim()}
-                            </span>
-                          )}
-                          {event.error && (
-                            <span className="block text-destructive whitespace-pre-wrap">{event.error.trim()}</span>
-                          )}
+                  <ScrollArea className="mt-3 max-h-40 pr-1">
+                    <div className="space-y-1 text-xs text-muted-foreground/90">
+                      {eventsForStep.map((event, idx) => (
+                        <div key={`${event.step_id}-${idx}`} className="flex items-start gap-2">
+                          <span className="mt-[2px] h-1.5 w-1.5 rounded-full bg-primary/40 flex-shrink-0" />
+                          <div className="flex-1 leading-relaxed">
+                            <span className="font-medium text-foreground/80">{event.phase}</span>
+                            {event.summary ? ` – ${event.summary}` : ""}
+                            {event.message_delta && (
+                              <TypewriterMarkdown
+                                text={event.message_delta.trim()}
+                                speed={8}
+                                className="text-muted-foreground text-[13px]"
+                              />
+                            )}
+                            {event.error && (
+                              <span className="block text-destructive whitespace-pre-wrap">{event.error.trim()}</span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
                 )}
               </div>
             </div>
           );
         })}
-      </div>
+        </div>
+      </ScrollArea>
     </div>
   );
 }

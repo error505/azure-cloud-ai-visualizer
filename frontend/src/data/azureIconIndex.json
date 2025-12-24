@@ -5018,7 +5018,14 @@
                                              "title":  "Static Apps",
                                              "file":  "01007-icon-service-Static-Apps.svg",
                                              "path":  "/icons/web/01007-icon-service-Static-Apps.svg"
-                                         }
+                                         },
+                                        {
+                                            "category":  "web",
+                                            "id":  "web/wordpress",
+                                            "title":  "Wordpress",
+                                            "file":  "wordpress.svg",
+                                            "path":  "/icons/web/wordpress.svg"
+                                        }
                                      ]
                        }
                    ]

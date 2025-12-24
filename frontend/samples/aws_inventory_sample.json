@@ -1,0 +1,307 @@
+{
+  "Resources": {
+    "ProductionVPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16",
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "Tags": [
+          { "Key": "Name", "Value": "Production-VPC" },
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "PublicSubnet1": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": "vpc-prod-001",
+        "CidrBlock": "10.0.1.0/24",
+        "AvailabilityZone": "us-east-1a",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          { "Key": "Name", "Value": "Public-Subnet-1" }
+        ]
+      }
+    },
+    "PrivateSubnet1": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": "vpc-prod-001",
+        "CidrBlock": "10.0.10.0/24",
+        "AvailabilityZone": "us-east-1a",
+        "Tags": [
+          { "Key": "Name", "Value": "Private-Subnet-1" }
+        ]
+      }
+    },
+    "WebServerSG": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Security group for web servers",
+        "VpcId": "vpc-prod-001",
+        "SecurityGroupIngress": [
+          { "IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "CidrIp": "0.0.0.0/0" },
+          { "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0" }
+        ],
+        "Tags": [
+          { "Key": "Name", "Value": "WebServer-SG" }
+        ]
+      }
+    },
+    "WebServer1": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "InstanceType": "t3.large",
+        "ImageId": "ami-0123456789abcdef0",
+        "SubnetId": "subnet-public-1",
+        "SecurityGroupIds": ["sg-webserver"],
+        "Tags": [
+          { "Key": "Name", "Value": "WebServer-1" },
+          { "Key": "Environment", "Value": "production" },
+          { "Key": "Role", "Value": "web" }
+        ]
+      }
+    },
+    "WebServer2": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "InstanceType": "t3.large",
+        "ImageId": "ami-0123456789abcdef0",
+        "SubnetId": "subnet-public-1",
+        "SecurityGroupIds": ["sg-webserver"],
+        "Tags": [
+          { "Key": "Name", "Value": "WebServer-2" },
+          { "Key": "Environment", "Value": "production" },
+          { "Key": "Role", "Value": "web" }
+        ]
+      }
+    },
+    "ApplicationLoadBalancer": {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Properties": {
+        "Name": "prod-alb",
+        "Scheme": "internet-facing",
+        "Type": "application",
+        "Subnets": ["subnet-public-1", "subnet-public-2"],
+        "SecurityGroups": ["sg-alb"],
+        "Tags": [
+          { "Key": "Name", "Value": "Production-ALB" }
+        ]
+      }
+    },
+    "ALBTargetGroup": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties": {
+        "Name": "web-targets",
+        "Port": 80,
+        "Protocol": "HTTP",
+        "VpcId": "vpc-prod-001",
+        "HealthCheckPath": "/health",
+        "TargetType": "instance"
+      }
+    },
+    "EKSCluster": {
+      "Type": "AWS::EKS::Cluster",
+      "Properties": {
+        "Name": "production-eks",
+        "Version": "1.28",
+        "RoleArn": "arn:aws:iam::123456789012:role/eks-cluster-role",
+        "ResourcesVpcConfig": {
+          "SubnetIds": ["subnet-private-1", "subnet-private-2"],
+          "SecurityGroupIds": ["sg-eks"]
+        },
+        "Tags": [
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "ProductionRDS": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "DBInstanceIdentifier": "production-db",
+        "Engine": "postgres",
+        "EngineVersion": "15.3",
+        "DBInstanceClass": "db.r6g.large",
+        "AllocatedStorage": 100,
+        "StorageType": "gp3",
+        "MultiAZ": true,
+        "VPCSecurityGroups": ["sg-database"],
+        "DBSubnetGroupName": "db-subnet-group",
+        "Tags": [
+          { "Key": "Name", "Value": "Production-RDS" },
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "CacheCluster": {
+      "Type": "AWS::ElastiCache::CacheCluster",
+      "Properties": {
+        "ClusterName": "prod-redis",
+        "Engine": "redis",
+        "CacheNodeType": "cache.r6g.large",
+        "NumCacheNodes": 2,
+        "VpcSecurityGroupIds": ["sg-cache"],
+        "Tags": [
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "DataBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": "production-data-bucket",
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "Tags": [
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "AssetsBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": "production-assets-bucket",
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": false
+        },
+        "Tags": [
+          { "Key": "Environment", "Value": "production" },
+          { "Key": "Purpose", "Value": "static-assets" }
+        ]
+      }
+    },
+    "OrdersQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": "orders-queue",
+        "VisibilityTimeout": 60,
+        "MessageRetentionPeriod": 1209600,
+        "Tags": [
+          { "Key": "Application", "Value": "orders" }
+        ]
+      }
+    },
+    "NotificationTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": "notifications",
+        "DisplayName": "Application Notifications",
+        "Tags": [
+          { "Key": "Application", "Value": "notifications" }
+        ]
+      }
+    },
+    "OrderProcessorLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": "order-processor",
+        "Runtime": "nodejs18.x",
+        "Handler": "index.handler",
+        "MemorySize": 512,
+        "Timeout": 30,
+        "VpcConfig": {
+          "SubnetIds": ["subnet-private-1"],
+          "SecurityGroupIds": ["sg-lambda"]
+        },
+        "Environment": {
+          "Variables": {
+            "DB_HOST": "production-db.cluster.us-east-1.rds.amazonaws.com",
+            "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/orders-queue"
+          }
+        },
+        "Tags": [
+          { "Key": "Application", "Value": "orders" }
+        ]
+      }
+    },
+    "APIGateway": {
+      "Type": "AWS::ApiGatewayV2::Api",
+      "Properties": {
+        "Name": "production-api",
+        "ProtocolType": "HTTP",
+        "Description": "Production REST API",
+        "Tags": {
+          "Environment": "production"
+        }
+      }
+    },
+    "CloudFrontDistribution": {
+      "Type": "AWS::CloudFront::Distribution",
+      "Properties": {
+        "DistributionConfig": {
+          "Enabled": true,
+          "DefaultRootObject": "index.html",
+          "Origins": [
+            {
+              "Id": "S3Origin",
+              "DomainName": "production-assets-bucket.s3.amazonaws.com"
+            }
+          ],
+          "DefaultCacheBehavior": {
+            "TargetOriginId": "S3Origin",
+            "ViewerProtocolPolicy": "redirect-to-https"
+          }
+        },
+        "Tags": [
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "SecretsManagerSecret": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Name": "production/database/credentials",
+        "Description": "Database credentials for production",
+        "Tags": [
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "KMSKey": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Production encryption key",
+        "EnableKeyRotation": true,
+        "Tags": [
+          { "Key": "Environment", "Value": "production" }
+        ]
+      }
+    },
+    "CloudWatchAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": "HighCPUUtilization",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 80,
+        "ComparisonOperator": "GreaterThanThreshold"
+      }
+    },
+    "ApplicationLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/aws/lambda/order-processor",
+        "RetentionInDays": 30,
+        "Tags": [
+          { "Key": "Application", "Value": "orders" }
+        ]
+      }
+    }
+  },
+  "Description": "Sample AWS Production Infrastructure - CloudFormation Export Format",
+  "AWSTemplateFormatVersion": "2010-09-09"
+}

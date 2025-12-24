@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import TopBar from '@/components/layout/TopBar';
+import { ActionSidebar } from '@/components/layout/ActionSidebar';
+import { Icon } from '@iconify/react';
 import ServicePalette from '@/components/layout/ServicePalette';
 import DiagramCanvas from '@/components/layout/DiagramCanvas';
 import InspectorPanel from '@/components/layout/InspectorPanel';
@@ -8,14 +10,34 @@ import JobsDrawer from '@/components/layout/JobsDrawer';
 import ChatPanel from '@/components/layout/ChatPanel';
 import AssetManager from '@/components/layout/AssetManager';
 import IaCVisualization from '@/components/layout/IaCVisualization';
-import { ResizableDivider } from '@/components/ui/resizable-divider';
+import IntegrationMarketplace from '@/components/layout/IntegrationMarketplace';
 import { useDiagramStore } from '@/store/diagramStore';
-import { generateIac, createDeployment } from '@/lib/api';
+import { API_BASE_URL, generateIac, createDeployment } from '@/lib/api';
 import DeployModal from '@/components/layout/DeployModal';
 import { useToast } from '@/hooks/use-toast';
 import { useSupabase } from '@/context/SupabaseContext';
-import { getProjectById, saveProjectDiagramState, updateProjectTitle, deleteProject, updateProjectIacTemplates, type ProjectDiagramState } from '@/services/projectService';
+import {
+  getProjectById,
+  saveProjectDiagramState,
+  updateProjectTitle,
+  deleteProject,
+  updateProjectIacTemplates,
+  updateProjectIntegrationSettings,
+  DEFAULT_INTEGRATION_SETTINGS,
+  type ProjectDiagramState,
+  type IntegrationSettings,
+} from '@/services/projectService';
 import { useIacStore } from '@/store/iacStore';
+import { Button } from '@/components/ui/button';
+import { DiagramImagePayload } from '@/types/diagramUpload';
+import {
+  AutopilotWizard,
+  DocumentationPanel,
+  CompliancePanel,
+  DualPassValidationModal,
+} from '@/components/modals';
+import { MigrationPanel } from '@/components/modals/MigrationPanel';
+import { CostOptimizationPanel } from '@/components/modals/CostOptimizationPanel';
 
 interface IaCFile {
   id: string;
@@ -36,24 +58,67 @@ type LocationState = {
   initialPrompt?: string;
   projectId?: string;
   openChat?: boolean;
+  diagramImageKey?: string;
+  integrationSettings?: IntegrationSettings;
 } | null;
+
+const normalizeIntegrationSettings = (settings?: IntegrationSettings | null): IntegrationSettings => ({
+  mcp: {
+    bicep: settings?.mcp?.bicep ?? DEFAULT_INTEGRATION_SETTINGS.mcp?.bicep ?? false,
+    terraform: settings?.mcp?.terraform ?? DEFAULT_INTEGRATION_SETTINGS.mcp?.terraform ?? false,
+    docs: settings?.mcp?.docs ?? DEFAULT_INTEGRATION_SETTINGS.mcp?.docs ?? false,
+  },
+});
 
 const Workspace = () => {
   const { projectId: routeProjectId } = useParams<{ projectId?: string }>();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isAssetsOpen, setIsAssetsOpen] = useState(false);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(true);
   const [isIacOpen, setIsIacOpen] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | undefined>(routeProjectId);
   const [projectTitle, setProjectTitle] = useState<string | undefined>(undefined);
-  const [footerHeight, setFooterHeight] = useState<number>(192); // Default: 192px (h-48)
-  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState<boolean>(false);
-  const [isServicePaletteCollapsed, setIsServicePaletteCollapsed] = useState<boolean>(false);
+  const [initialDiagramImage, setInitialDiagramImage] = useState<DiagramImagePayload | null>(null);
+  const [integrationSettings, setIntegrationSettings] = useState<IntegrationSettings>(DEFAULT_INTEGRATION_SETTINGS);
+  const [isMarketplaceOpen, setIsMarketplaceOpen] = useState(false);
+  const [isJobsOpen, setIsJobsOpen] = useState(true);
+  const [isSavingIntegrationSettings, setIsSavingIntegrationSettings] = useState(false);
+  
+  // Enterprise features state
+  const [showAutopilot, setShowAutopilot] = useState(false);
+  const [showDocumentation, setShowDocumentation] = useState(false);
+  const [showCompliance, setShowCompliance] = useState(false);
+  const [showDualPass, setShowDualPass] = useState(false);
+  const [showInspectorManual, setShowInspectorManual] = useState(false);
+  const [autopilotRequirements, setAutopilotRequirements] = useState('');
+  
+  // Multi-cloud migration state
+  const [showMigration, setShowMigration] = useState(false);
+  const [showCostOptimization, setShowCostOptimization] = useState(false);
+  
+  const activeIntegrationCount = useMemo(
+    () => {
+      const mcpCount = integrationSettings?.mcp ? Object.values(integrationSettings.mcp).filter(Boolean).length : 0;
+      const agentCount = integrationSettings?.agents ? Object.entries(integrationSettings.agents).filter(([key, value]) => key !== 'architect' && value).length : 0;
+      return mcpCount + agentCount;
+    },
+    [integrationSettings]
+  );
 
-  const { client: supabaseClient, supabaseAvailable } = useSupabase();
-  const { nodes, edges, clearDiagram, replaceDiagram, loadDiagram } = useDiagramStore();
+  const { client: supabaseClient, supabaseAvailable, session, isReady } = useSupabase();
+  const nodes = useDiagramStore((state) => state.nodes);
+  const edges = useDiagramStore((state) => state.edges);
+  const selectedNode = useDiagramStore((state) => state.selectedNode);
+  const clearDiagram = useDiagramStore((state) => state.clearDiagram);
+  const replaceDiagram = useDiagramStore((state) => state.replaceDiagram);
+  const loadDiagram = useDiagramStore((state) => state.loadDiagram);
+  const currentDiagramView = useDiagramStore((state) => state.currentView);
+  const switchDiagramView = useDiagramStore((state) => state.switchView);
+  const diagramViews = useDiagramStore((state) => state.views);
   const { toast } = useToast();
 
   const locationState = location.state as LocationState;
@@ -61,6 +126,9 @@ const Workspace = () => {
   const [generatedFiles, setGeneratedFiles] = useState<IaCFile[]>(seedFiles);
   const [deployingFile, setDeployingFile] = useState<IaCFile | null>(null);
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false);
+  const [isGeneratingShareLink, setIsGeneratingShareLink] = useState(false);
+  const shareToken = searchParams.get('share_token');
+  const isSharedView = Boolean(shareToken);
 
   const setBicepTemplate = useIacStore((state) => state.setBicepTemplate);
   const clearIacStore = useIacStore((state) => state.clear);
@@ -73,6 +141,63 @@ const Workspace = () => {
   const lastSuccessfulSignatureRef = useRef<string | null>(null);
   const latestDiagramSignatureRef = useRef<string>('');
   const autoIacRunningRef = useRef(false);
+  const lastShareAttemptRef = useRef<number>(0);
+
+  const handleShareLink = useCallback(async () => {
+    if (!projectId) {
+      toast({
+        title: 'Save your project first',
+        description: 'Generate a project to share a live collaboration link.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastShareAttemptRef.current < 750) {
+      return;
+    }
+    lastShareAttemptRef.current = now;
+
+    setIsGeneratingShareLink(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ diagram_data: { nodes, edges } }),
+      });
+      if (!response.ok) {
+        throw new Error(`Share link failed (${response.status})`);
+      }
+      const data: { share_url?: string; shareUrl?: string; share_token?: string } = await response.json();
+      const shareUrl =
+        data.share_url ??
+        data.shareUrl ??
+        `${window.location.origin.replace(/\/$/, '')}/app/${projectId}${data.share_token ? `?share_token=${data.share_token}` : ''}`;
+
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        toast({
+          title: 'Share link copied',
+          description: 'Anyone with the link can open the project for collaboration.',
+        });
+      } catch {
+        toast({
+          title: 'Share link ready',
+          description: shareUrl,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to generate share link';
+      toast({
+        title: 'Share link error',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsGeneratingShareLink(false);
+    }
+  }, [API_BASE_URL, projectId, toast]);
 
   const persistIacArtifacts = useCallback(
     async (artifacts: {
@@ -160,18 +285,34 @@ const Workspace = () => {
   );
 
   const diagramSignature = useMemo(() => {
-    const nodeSignature = nodes.map((node) => ({
-      id: node.id,
-      position: node.position,
-      parentNode:
-        (node as Record<string, unknown>).parentNode ?? (node as Record<string, unknown>).parentId ?? null,
-    }));
-    const edgeSignature = edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      label: edge.label ?? null,
-    }));
+    const nodeSignature = nodes
+      .map((node) => {
+        const nodeRecord = node as Record<string, unknown>;
+        const data = (nodeRecord.data ?? {}) as Record<string, unknown>;
+        const serviceId = typeof data.service === 'object' && data.service !== null ? (data.service as Record<string, unknown>).id : undefined;
+        return {
+          id: node.id,
+          type: node.type,
+          parentNode: (nodeRecord.parentNode ?? nodeRecord.parentId ?? null) as string | null,
+          serviceId: serviceId ?? null,
+          title: (data.title as string) ?? (data.label as string) ?? null,
+        };
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    const edgeSignature = edges
+      .map((edge) => ({
+        source: edge.source,
+        target: edge.target,
+        label: edge.label ?? null,
+      }))
+      .sort((a, b) => {
+        if (a.source === b.source) {
+          return a.target.localeCompare(b.target);
+        }
+        return a.source.localeCompare(b.source);
+      });
+
     return JSON.stringify({ nodes: nodeSignature, edges: edgeSignature });
   }, [nodes, edges]);
 
@@ -323,6 +464,24 @@ const Workspace = () => {
       setIsChatOpen(true);
     }
 
+    if (locationState.diagramImageKey && typeof window !== 'undefined') {
+      try {
+        const stored = sessionStorage.getItem(locationState.diagramImageKey);
+        if (stored) {
+          const parsed = JSON.parse(stored) as DiagramImagePayload;
+          setInitialDiagramImage(parsed);
+          setIsChatOpen(true);
+        }
+        sessionStorage.removeItem(locationState.diagramImageKey);
+      } catch (error) {
+        console.error('[Workspace] Failed to load stored diagram image', error);
+      }
+    }
+
+    if (locationState.integrationSettings) {
+      setIntegrationSettings(normalizeIntegrationSettings(locationState.integrationSettings));
+    }
+
     navigate(location.pathname, { replace: true, state: null });
   }, [location.pathname, locationState, navigate]);
 
@@ -332,31 +491,156 @@ const Workspace = () => {
   }, [clearIacStore, routeProjectId]);
 
   useEffect(() => {
+    if (!projectId && !locationState?.integrationSettings) {
+      setIntegrationSettings(DEFAULT_INTEGRATION_SETTINGS);
+    }
+  }, [projectId, locationState?.integrationSettings]);
+
+  useEffect(() => {
     clearDiagram();
     setGeneratedFiles([]);
   }, [clearDiagram, projectId]);
 
   useEffect(() => {
-    if (!projectId || !supabaseAvailable || !supabaseClient) {
+    if (!projectId) {
+      return;
+    }
+    if (!isReady) {
       return;
     }
     let cancelled = false;
-    (async () => {
+
+    const loadSharedProject = async () => {
+      try {
+        const resp = await fetch(`${API_BASE_URL}/api/projects/share/${shareToken}`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        let project: any = null;
+        if (resp.ok) {
+          project = await resp.json();
+        }
+
+        // Fallback: if backend share endpoint fails or lacks diagram data, try Supabase anon read.
+        if ((!project || !project.diagram_data) && supabaseAvailable && supabaseClient) {
+          try {
+            project = await getProjectById(supabaseClient, projectId);
+          } catch (err) {
+            console.warn('[Workspace] Fallback supabase fetch failed for shared link', err);
+          }
+        }
+
+        if (cancelled) return;
+        if (!project) {
+          throw new Error('Invalid share link');
+        }
+
+        setProjectTitle(project?.name ?? project?.title ?? undefined);
+        let diagram =
+          (project as any).diagram_data ||
+          (project as any).diagram_state ||
+          (project as any).diagram ||
+          null;
+
+        // Debug: log the full project payload to help trace missing/invalid diagrams
+        try {
+          // Avoid very large dumps in some environments
+          // eslint-disable-next-line no-console
+          console.log('[Workspace][shared][fullProject]', project);
+        } catch (e) {
+          /* ignore logging errors */
+        }
+
+        // If the diagram was stored as a JSON string, attempt to parse it
+        if (typeof diagram === 'string') {
+          try {
+            diagram = JSON.parse(diagram);
+          } catch (err) {
+            console.warn('[Workspace][shared] failed to parse diagram JSON string', err);
+          }
+        }
+
+        // If diagram nodes/edges are stored as maps (id -> node) convert to arrays
+        if (diagram && typeof diagram === 'object' && !Array.isArray(diagram.nodes) && diagram.nodes && typeof diagram.nodes === 'object') {
+          try {
+            diagram.nodes = Object.keys(diagram.nodes).map((k) => (diagram.nodes as Record<string, any>)[k]);
+          } catch (err) {
+            console.warn('[Workspace][shared] failed to normalize diagram.nodes map', err);
+          }
+        }
+        if (diagram && typeof diagram === 'object' && !Array.isArray(diagram.edges) && diagram.edges && typeof diagram.edges === 'object') {
+          try {
+            diagram.edges = Object.keys(diagram.edges).map((k) => (diagram.edges as Record<string, any>)[k]);
+          } catch (err) {
+            console.warn('[Workspace][shared] failed to normalize diagram.edges map', err);
+          }
+        }
+
+        console.log('[Workspace][shared] project payload', {
+          hasDiagramData: Boolean((project as any).diagram_data),
+          hasDiagramState: Boolean((project as any).diagram_state),
+          diagramKeys: diagram ? Object.keys(diagram) : [],
+        });
+
+        if (diagram && Array.isArray(diagram.nodes) && Array.isArray(diagram.edges)) {
+          console.log('[Workspace][shared] applying diagram', {
+            nodeCount: diagram.nodes.length,
+            edgeCount: diagram.edges.length,
+            sampleNode: diagram.nodes[0]?.id,
+            parsed: typeof diagram === 'object',
+          });
+          loadDiagram(diagram.nodes, diagram.edges);
+        } else {
+          console.warn('[Workspace][shared] diagram missing or invalid', {
+            hasNodes: Array.isArray(diagram?.nodes),
+            hasEdges: Array.isArray(diagram?.edges),
+            diagramPreview: diagram,
+          });
+        }
+      } catch (error) {
+        console.error('[Workspace] Failed to load shared project', error);
+        toast({
+          title: 'Share link invalid',
+          description: 'This project link is invalid or revoked.',
+          variant: 'destructive',
+        });
+        navigate('/');
+      }
+    };
+
+    const loadPrivateProject = async () => {
+      if (!supabaseAvailable || !supabaseClient || !session?.user) {
+        toast({
+          title: 'Access denied',
+          description: 'Sign in to access this project or use a valid share link.',
+          variant: 'destructive',
+        });
+        navigate('/');
+        return;
+      }
       try {
         const project = await getProjectById(supabaseClient, projectId);
         if (cancelled) {
           return;
         }
         const diagram = project.diagram_state as ProjectDiagramState | null;
-        // capture title so TopBar can show/edit it
         setProjectTitle(project?.title ?? undefined);
+        setIntegrationSettings(normalizeIntegrationSettings(project.integration_settings as IntegrationSettings | null));
         if (diagram && Array.isArray(diagram.nodes) && Array.isArray(diagram.edges)) {
+          console.log('[Workspace][private] applying diagram', {
+            nodeCount: diagram.nodes.length,
+            edgeCount: diagram.edges.length,
+            sampleNode: diagram.nodes[0]?.id,
+          });
           loadDiagram(diagram.nodes, diagram.edges);
           console.log('[Workspace] Loaded persisted diagram state', {
             projectId,
             nodeCount: diagram.nodes.length,
             edgeCount: diagram.edges.length,
           });
+        }
+        else {
+          console.warn('[Workspace][private] diagram missing or invalid', { hasNodes: Array.isArray(diagram?.nodes), hasEdges: Array.isArray(diagram?.edges) });
         }
 
         const autoFiles: IaCFile[] = [];
@@ -393,12 +677,24 @@ const Workspace = () => {
         }
       } catch (error) {
         console.error('[Workspace] Failed to load diagram state', error);
+        toast({
+          title: 'Unable to load project',
+          description: 'Please check your access or try again.',
+          variant: 'destructive',
+        });
+        navigate('/');
       }
-    })();
+    };
+
+    if (shareToken) {
+      void loadSharedProject();
+    } else {
+      void loadPrivateProject();
+    }
     return () => {
       cancelled = true;
     };
-  }, [projectId, supabaseAvailable, supabaseClient, loadDiagram, setBicepTemplate, clearIacStore]);
+  }, [API_BASE_URL, projectId, supabaseAvailable, supabaseClient, loadDiagram, setBicepTemplate, clearIacStore, shareToken, isReady, session?.user, navigate, toast]);
 
   useEffect(() => {
     if (!pendingBicepTemplate) {
@@ -456,12 +752,76 @@ const Workspace = () => {
     setIsChatOpen((prev) => !prev);
   };
 
+  const handleIntegrationsToggle = () => {
+    setIsMarketplaceOpen((prev) => !prev);
+  };
+
+  const handleIntegrationSettingChange = useCallback(
+    async (key: string, enabled: boolean, type?: 'mcp' | 'agent') => {
+      const previous = integrationSettings;
+      const next = normalizeIntegrationSettings({
+        ...integrationSettings,
+        mcp: type === 'mcp' ? {
+          ...integrationSettings.mcp,
+          [key]: enabled,
+        } : integrationSettings.mcp,
+        agents: type === 'agent' ? {
+          ...integrationSettings.agents,
+          [key]: enabled,
+        } : integrationSettings.agents,
+      });
+
+      setIntegrationSettings(next);
+
+      // If no project, just update local state (settings active for current session)
+      if (!projectId || !supabaseClient || !supabaseAvailable) {
+        if (!projectId) {
+          toast({
+            title: 'Settings applied',
+            description: 'These settings are active for this session. Save the project to persist them.',
+            duration: 2000,
+          });
+        }
+        return;
+      }
+
+      setIsSavingIntegrationSettings(true);
+      try {
+        await updateProjectIntegrationSettings(supabaseClient, projectId, next);
+        toast({
+          title: 'Settings saved',
+          description: 'Integration preferences updated successfully.',
+          duration: 2000,
+        });
+      } catch (error) {
+        console.error('[Workspace] Failed to persist integration settings', error);
+        setIntegrationSettings(previous);
+        toast({
+          title: 'Save failed',
+          description: 'Could not update integration preferences. Please try again.',
+          variant: 'destructive',
+        });
+      } finally {
+        setIsSavingIntegrationSettings(false);
+      }
+    },
+    [integrationSettings, projectId, supabaseAvailable, supabaseClient, toast]
+  );
+
   const handleAssetsToggle = () => {
     setIsAssetsOpen((prev) => !prev);
   };
 
+  const handlePaletteToggle = () => {
+    setIsPaletteOpen((prev) => !prev);
+  };
+
   const handleIacToggle = () => {
     setIsIacOpen((prev) => !prev);
+  };
+
+  const handleJobsToggle = () => {
+    setIsJobsOpen((prev) => !prev);
   };
 
   const handleSave = async () => {
@@ -544,6 +904,53 @@ const Workspace = () => {
     return 'Azure Architect';
   }, [projectId, projectTitle]);
 
+  // Detect the primary cloud provider from the source diagram
+  const sourceProvider = useMemo(() => {
+    const sourceNodes = diagramViews.source?.nodes || [];
+    if (sourceNodes.length === 0) return 'AWS'; // Default fallback
+    
+    let awsCount = 0;
+    let gcpCount = 0;
+    let azureCount = 0;
+    
+    sourceNodes.forEach((node: { id?: string; data?: { provider?: string } }) => {
+      const provider = (node.data?.provider || '').toLowerCase();
+      const nodeId = (node.id || '').toLowerCase();
+      
+      if (provider === 'aws' || nodeId.startsWith('aws:')) {
+        awsCount++;
+      } else if (provider === 'gcp' || nodeId.startsWith('gcp:')) {
+        gcpCount++;
+      } else if (provider === 'azure') {
+        azureCount++;
+      }
+    });
+    
+    // Return the dominant provider
+    if (gcpCount > awsCount && gcpCount > azureCount) return 'GCP';
+    if (awsCount > gcpCount && awsCount > azureCount) return 'AWS';
+    return 'AWS'; // Default
+  }, [diagramViews.source]);
+
+  // If there is no migration/source diagram present, prefer Azure view by default.
+  useEffect(() => {
+    const hasAzure = !!diagramViews.azure && Array.isArray(diagramViews.azure.nodes) && diagramViews.azure.nodes.length > 0;
+    const hasSource = !!diagramViews.source && Array.isArray(diagramViews.source.nodes) && diagramViews.source.nodes.length > 0;
+    const migratingFromImage = !!initialDiagramImage;
+    if (!migratingFromImage && !hasSource && !hasAzure) {
+      // Nothing loaded yet — keep as-is.
+      return;
+    }
+    // If there's no explicit source/migration context, ensure Azure is the active view.
+    if (!migratingFromImage && !hasSource && hasAzure) {
+      switchDiagramView('azure');
+    }
+    // If an image import is present, prefer showing the source view so users can inspect it.
+    if (migratingFromImage && hasSource) {
+      switchDiagramView('source');
+    }
+  }, [diagramViews, initialDiagramImage, switchDiagramView]);
+
   const handleRename = async (newTitle: string) => {
     if (!projectId || !supabaseClient) {
       toast({ title: 'Rename failed', description: 'Sign in and open a project to rename it.', variant: 'destructive' });
@@ -584,33 +991,96 @@ const Workspace = () => {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
+      {isSharedView && !session?.user && (
+        <div className="bg-amber-200 text-amber-900 px-4 py-2 text-sm flex items-center justify-between">
+          <span>
+            You are viewing a shared project link. Sign in to collaborate and save changes; edits in this view will not
+            persist.
+          </span>
+          <span className="flex items-center gap-2">
+            <Icon icon="mdi:information-outline" className="text-lg" />
+          </span>
+        </div>
+      )}
       <TopBar
         titleOverride={workspaceTitle}
-        onChatToggle={handleChatToggle}
-        isChatOpen={isChatOpen}
-        onAssetsToggle={handleAssetsToggle}
-        isAssetsOpen={isAssetsOpen}
-        onIacToggle={handleIacToggle}
-        isIacOpen={isIacOpen}
-        onSave={handleSave}
         projectId={projectId}
         onRename={handleRename}
         onDelete={handleDelete}
       />
-      <div className="flex-1 flex overflow-hidden" style={{ minHeight: 0 }}>
-        <ServicePalette 
-          isCollapsed={isServicePaletteCollapsed}
-          onToggleCollapse={() => setIsServicePaletteCollapsed(!isServicePaletteCollapsed)}
+      <div className="flex-1 flex overflow-hidden">
+        <ActionSidebar
+          onSave={handleSave}
+          projectId={projectId}
+          onShareLink={handleShareLink}
+          isShareGenerating={isGeneratingShareLink}
+          onChatToggle={handleChatToggle}
           isChatOpen={isChatOpen}
+          // onAutopilotToggle={() => setShowAutopilot(true)}
+          onDocumentationToggle={() => setShowDocumentation(true)}
+          onComplianceToggle={() => setShowCompliance(true)}
+          onDualPassToggle={() => setShowDualPass(true)}
+          onInspectorToggle={() => setShowInspectorManual((s) => !s)}
+          isInspectorOpen={Boolean(selectedNode) || showInspectorManual}
+          hasNodes={nodes.length > 0}
+          onPaletteToggle={handlePaletteToggle}
+          isPaletteOpen={isPaletteOpen}
+          onIacToggle={handleIacToggle}
           isIacOpen={isIacOpen}
+          onIntegrationsToggle={handleIntegrationsToggle}
+          activeIntegrationCount={activeIntegrationCount}
+          onDeployToggle={() => console.log('Deploy clicked')}
+          onAssetsToggle={handleAssetsToggle}
+          isAssetsOpen={isAssetsOpen}
+          onMigrationToggle={() => setShowMigration(true)}
+          onCostToggle={() => setShowCostOptimization(true)}
         />
-        <DiagramCanvas />
-        <InspectorPanel 
-          isCollapsed={isInspectorCollapsed}
-          onToggleCollapse={() => setIsInspectorCollapsed(!isInspectorCollapsed)}
-          isChatOpen={isChatOpen}
-          isIacOpen={isIacOpen}
-        />
+        <div
+          className={`transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 h-full flex flex-col ${
+            isPaletteOpen ? 'w-64 opacity-100 pointer-events-auto' : 'w-0 opacity-0 pointer-events-none'
+          }`}
+        >
+          <ServicePalette />
+        </div>
+        <div className="flex flex-col flex-1 min-w-0">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border/50 bg-muted/30">
+            <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Diagram View
+            </div>
+            <div className="flex gap-2">
+                {/* Show migration view toggles only when migrating from an imported/source diagram */}
+                {(
+                  !!initialDiagramImage ||
+                  (!!diagramViews.azure && Array.isArray(diagramViews.azure.nodes) && diagramViews.azure.nodes.length > 0 &&
+                    !!diagramViews.source && Array.isArray(diagramViews.source.nodes) && diagramViews.source.nodes.length > 0)
+                ) ? (
+                  <>
+                    <Button
+                      variant={currentDiagramView === 'source' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => switchDiagramView('source')}
+                    >
+                      Source ({sourceProvider})
+                    </Button>
+                    <Button
+                      variant={currentDiagramView === 'azure' ? 'default' : 'outline'}
+                      size="sm"
+                      disabled={!diagramViews.azure || diagramViews.azure.nodes.length === 0}
+                      onClick={() => switchDiagramView('azure')}
+                    >
+                      Azure (migrated)
+                    </Button>
+                  </>
+                ) : null}
+            </div>
+          </div>
+          <DiagramCanvas />
+        </div>
+
+        {/* Inspector: show when a node is selected or when manually toggled. Use a smooth width transition like ServicePalette */}
+        <div className={`transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 h-full flex flex-col ${selectedNode || showInspectorManual ? 'w-80 opacity-100 pointer-events-auto' : 'w-0 opacity-0 pointer-events-none'}`}>
+          <InspectorPanel />
+        </div>
         <IaCVisualization
           isOpen={isIacOpen}
           onToggle={handleIacToggle}
@@ -640,35 +1110,40 @@ const Workspace = () => {
           onInitialPromptConsumed={() => setPendingPrompt(null)}
           projectId={projectId}
           onIacGenerated={persistIacArtifacts}
+          initialDiagramImage={initialDiagramImage}
+          integrationSettings={integrationSettings}
+          onOpenIntegrations={handleIntegrationsToggle}
         />
       </div>
-      <ResizableDivider 
-        onResize={setFooterHeight}
-        onMinimize={() => setFooterHeight(48)}
-        onMaximize={() => setFooterHeight(400)}
-        minHeight={48}
-        maxHeight={600}
-        defaultHeight={192}
-      />
-      <JobsDrawer
-        height={footerHeight}
-        files={generatedFiles}
-        onDownload={(file) => {
-          const blob = new Blob([file.content], { type: 'text/plain' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = file.name;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(url);
-        }}
-        onDeploy={(file) => {
-          console.log('Deploy requested for file:', file.name);
-          toast({ title: 'Deploy started', description: `Deploy requested for ${file.name}` });
-        }}
-      />
+      <div className="relative">
+        <div className={`transition-all duration-300 ease-in-out overflow-hidden ${isJobsOpen ? 'h-48 opacity-100' : 'h-0 opacity-0 pointer-events-none'}`}>
+          <JobsDrawer
+            files={generatedFiles}
+            onDownload={(file) => {
+              const blob = new Blob([file.content], { type: 'text/plain' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = file.name;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              URL.revokeObjectURL(url);
+            }}
+            onDeploy={(file) => {
+              console.log('Deploy requested for file:', file.name);
+              toast({ title: 'Deploy started', description: `Deploy requested for ${file.name}` });
+            }}
+          />
+        </div>
+        <button
+          onClick={() => setIsJobsOpen((s) => !s)}
+          title={isJobsOpen ? 'Close jobs drawer' : 'Open jobs drawer'}
+          className="fixed bottom-6 right-6 z-50 flex items-center justify-center w-10 h-10 rounded-md glass-panel border border-border/40"
+        >
+          <Icon icon={isJobsOpen ? 'mdi:chevron-down' : 'mdi:chevron-up'} className="text-lg" />
+        </button>
+      </div>
       <DeployModal
         open={isDeployModalOpen}
         onClose={() => setIsDeployModalOpen(false)}
@@ -692,6 +1167,155 @@ const Workspace = () => {
             toast({ title: 'Deployment failed', description: msg || String(err), variant: 'destructive' });
           }
         }}
+      />
+      <IntegrationMarketplace
+        open={isMarketplaceOpen}
+        onOpenChange={setIsMarketplaceOpen}
+        settings={integrationSettings}
+        onToggle={handleIntegrationSettingChange}
+        isSaving={isSavingIntegrationSettings}
+        disabled={false}
+        projectId={projectId}
+      />
+
+      {/* Enterprise Features */}
+      <AutopilotWizard
+        open={showAutopilot}
+        onClose={() => setShowAutopilot(false)}
+        onArchitectureGenerated={(architecture) => {
+          // Apply generated architecture to diagram
+          loadDiagram(architecture.diagram.nodes, architecture.diagram.edges);
+          
+          // Store IaC code if available
+          if (architecture.iac) {
+            const newFiles: IaCFile[] = [];
+            if (architecture.iac.bicep) {
+              newFiles.push({
+                id: `bicep-${Date.now()}`,
+                name: 'main.bicep',
+                type: 'bicep',
+                content: architecture.iac.bicep,
+                size: architecture.iac.bicep.length,
+                status: 'generated',
+                autoGenerated: true,
+              });
+            }
+            if (architecture.iac.terraform) {
+              newFiles.push({
+                id: `terraform-${Date.now()}`,
+                name: 'main.tf',
+                type: 'terraform',
+                content: architecture.iac.terraform,
+                size: architecture.iac.terraform.length,
+                status: 'generated',
+                autoGenerated: true,
+              });
+            }
+            setGeneratedFiles(prev => [...prev, ...newFiles]);
+          }
+          
+          setAutopilotRequirements('Generated via Autopilot');
+          toast({
+            title: 'Architecture generated',
+            description: `Created architecture with ${architecture.diagram.nodes.length} services`,
+          });
+        }}
+      />
+
+      <DocumentationPanel
+        open={showDocumentation}
+        onClose={() => setShowDocumentation(false)}
+        diagram={{ nodes, edges }}
+        requirements={autopilotRequirements}
+      />
+
+      <CompliancePanel
+        open={showCompliance}
+        onClose={() => setShowCompliance(false)}
+        diagram={{ nodes, edges }}
+        onDiagramUpdate={(updatedDiagram) => {
+          loadDiagram(updatedDiagram.nodes, updatedDiagram.edges);
+          toast({
+            title: 'Compliance fixes applied',
+            description: 'Diagram updated with compliance improvements',
+          });
+        }}
+      />
+
+      <DualPassValidationModal
+        open={showDualPass}
+        onOpenChange={(open) => setShowDualPass(open)}
+        validationResult={{
+          architect_proposal: { diagram: { nodes: [], edges: [] }, rationale: '', services_count: 0, estimated_monthly_cost: 0, compliance_frameworks: [] },
+          critic_review: { overall_score: 0, issues: [], strengths: [], summary: '', recommended_changes: {} },
+          conflicts: [],
+          final_recommendation: '',
+          auto_fix_available: false,
+        }}
+        onApplyFixes={async (fixes) => {
+          try {
+            const resp = await fetch('/api/validation/apply-fixes', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ diagram: { nodes, edges }, selected_issue_ids: Array.isArray(fixes) ? fixes.map((f: any) => f.requirement_id || f.title) : [] }),
+            });
+            if (!resp.ok) throw new Error('Apply fixes failed');
+            const data = await resp.json();
+            if (data.updated_diagram && data.updated_diagram.nodes) {
+              loadDiagram(data.updated_diagram.nodes, data.updated_diagram.edges || []);
+              toast({ title: 'Fixes applied', description: 'Diagram updated with fixes' });
+            } else {
+              toast({ title: 'Fixes applied', description: 'Requested fixes applied' });
+            }
+          } catch (err) {
+            console.error('[DualPass] apply fixes failed', err);
+            toast({ title: 'Apply fixes failed', description: String(err), variant: 'destructive' });
+          }
+        }}
+        onAcceptProposal={(diagramObj) => {
+          if (diagramObj && diagramObj.nodes) {
+            loadDiagram(diagramObj.nodes, diagramObj.edges || []);
+            toast({ title: 'Proposal accepted', description: 'Architecture applied to diagram' });
+          }
+          setShowDualPass(false);
+        }}
+      />
+
+      {/* Multi-Cloud Migration Modals */}
+      <MigrationPanel
+        isOpen={showMigration}
+        onClose={() => setShowMigration(false)}
+        projectId={projectId}
+        onMigrationComplete={(result) => {
+          if (result.target_nodes && result.target_nodes.length > 0) {
+            const diagramNodes = result.target_nodes.map((node: { id: string; service_type: string; label: string; category?: string; resource_type?: string }, index: number) => ({
+              id: node.id,
+              type: 'azureService',
+              position: { x: 100 + (index % 5) * 200, y: 100 + Math.floor(index / 5) * 150 },
+              data: {
+                label: node.label,
+                title: node.label,
+                serviceType: node.service_type,
+                category: node.category,
+                provider: 'azure',
+              },
+            }));
+            // Infer edges from mappings (source to target node relationships)
+            const diagramEdges: { id: string; source: string; target: string; type: string }[] = [];
+            loadDiagram(diagramNodes, diagramEdges);
+            toast({
+              title: 'Migration plan applied',
+              description: `Migrated to Azure with ${result.mappings?.length || 0} service mappings`,
+            });
+          }
+          setShowMigration(false);
+        }}
+      />
+
+      <CostOptimizationPanel
+        isOpen={showCostOptimization}
+        onClose={() => setShowCostOptimization(false)}
+        projectId={projectId}
       />
     </div>
   );
